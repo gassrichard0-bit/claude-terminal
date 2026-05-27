@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Claude Terminal</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    background: #0a0a0a;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Top bar */
+  .topbar {
+    display: flex;
+    align-items: center;
+    padding: 6px 12px;
+    background: #141414;
+    border-bottom: 1px solid #2a2a2a;
+    gap: 8px;
+    min-height: 40px;
+    flex-shrink: 0;
+  }
+  .topbar .logo {
+    font-size: 14px;
+    font-weight: 700;
+    color: #f0a030;
+    background: #1e1e1e;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+  .topbar .status {
+    font-size: 11px;
+    color: #666;
+    margin-left: auto;
+  }
+  .topbar .status.connected { color: #4ade80; }
+  .topbar .status.disconnected { color: #f87171; }
+  .topbar .status.connecting { color: #facc15; }
+  .topbar button {
+    background: #2a2a2a;
+    color: #ccc;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .topbar button:hover { background: #333; }
+
+  /* Terminal container */
+  #terminal-container {
+    flex: 1;
+    padding: 4px;
+    overflow: hidden;
+  }
+  
+  /* Mobile input bar */
+  .inputbar {
+    display: none;
+    padding: 6px 10px;
+    background: #141414;
+    border-top: 1px solid #2a2a2a;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .inputbar.show { display: flex; }
+  .inputbar input {
+    flex: 1;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 16px;
+    outline: none;
+  }
+  .inputbar input:focus { border-color: #f0a030; }
+  .inputbar button {
+    background: #f0a030;
+    color: #000;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 16px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* Connection dialog */
+  #connect-dialog {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #connect-dialog.show { display: flex; }
+  #connect-dialog .card {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 380px;
+    width: 90%;
+    text-align: center;
+  }
+  #connect-dialog h2 { 
+    color: #f0a030;
+    margin-bottom: 8px;
+    font-size: 20px;
+  }
+  #connect-dialog p {
+    color: #888;
+    margin-bottom: 20px;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  #connect-dialog input {
+    width: 100%;
+    background: #222;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 16px;
+    outline: none;
+    margin-bottom: 12px;
+  }
+  #connect-dialog input:focus { border-color: #f0a030; }
+  #connect-dialog .connect-btn {
+    width: 100%;
+    background: #f0a030;
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #connect-dialog .connect-btn:hover { background: #e09020; }
+  #connect-dialog .error-msg {
+    color: #f87171;
+    font-size: 12px;
+    margin-top: 8px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- Connect Dialog -->
+<div id="connect-dialog" class="show">
+  <div class="card">
+    <h2>⚡ Claude Terminal</h2>
+    <p>Enter your token to connect to your Claude Code session</p>
+    <input type="text" id="token-input" placeholder="Paste your token" autocomplete="off">
+    <button class="connect-btn" onclick="connect_terminal()">Connect</button>
+    <div class="error-msg" id="connect-error">Connection failed — check your token</div>
+  </div>
+</div>
+
+<!-- Top Bar -->
+<div class="topbar" id="topbar" style="display:none">
+  <span class="logo">CLAUDE</span>
+  <span style="font-size:12px;color:#666" id="session-label">claude-main</span>
+  <span class="status disconnected" id="status-indicator">Disconnected</span>
+  <button onclick="restart_session()">⟳ Restart</button>
+</div>
+
+<!-- Terminal -->
+<div id="terminal-container"></div>
+
+<!-- Mobile Input Bar -->
+<div class="inputbar" id="inputbar">
+  <input type="text" id="mobile-input" placeholder="Type here..." autocomplete="off">
+  <button onclick="send_mobile()">Send</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/addons/fit/fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/addons/web-links/web-links.min.js"></script>
+<script>
+// --- State ---
+let token = localStorage.getItem('claude_token') || '';
+let sessionId = 'claude-main';
+let ws = null;
+let term = null;
+let baseUrl = window.location.origin;
+let reconnectTimer = null;
+let connectedOnce = false;
+
+// --- Auto-connect ---
+document.addEventListener('DOMContentLoaded', () => {
+  if (token) {
+    document.getElementById('token-input').value = token;
+    connect_terminal();
+  }
+});
+
+// --- Init xterm ---
+function init_terminal() {
+  const container = document.getElementById('terminal-container');
+  container.innerHTML = '';
+  
+  term = new Terminal({
+    fontSize: 13,
+    fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
+    cursorBlink: true,
+    cursorStyle: 'block',
+    allowProposedApi: true,
+    theme: {
+      background: '#0a0a0a',
+      foreground: '#e0e0e0',
+      cursor: '#f0a030',
+      selectionBackground: '#f0a03044',
+      black: '#000000',
+      red: '#f85149',
+      green: '#3fb950',
+      yellow: '#d29922',
+      blue: '#58a6ff',
+      magenta: '#bc8cff',
+      cyan: '#39d2c0',
+      white: '#f0f6fc',
+      brightBlack: '#484f58',
+      brightRed: '#ff7b72',
+      brightGreen: '#3fb950',
+      brightYellow: '#d29922',
+      brightBlue: '#58a6ff',
+      brightMagenta: '#bc8cff',
+      brightCyan: '#39d2c0',
+      brightWhite: '#ffffff',
+    }
+  });
+
+  const fitAddon = new FitAddon();
+  term.loadAddon(fitAddon);
+  const webLinksAddon = new WebLinksAddon();
+  term.loadAddon(webLinksAddon);
+
+  term.open(container);
+  fitAddon.fit();
+
+  // Terminal input handling
+  term.onData(data => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data: data }));
+    }
+  });
+
+  // Resize handler
+  const onResize = () => {
+    try { fitAddon.fit(); } catch(e) {}
+    if (ws && ws.readyState === WebSocket.OPEN && term) {
+      ws.send(JSON.stringify({
+        type: 'resize',
+        cols: term.cols,
+        rows: term.rows
+      }));
+    }
+  };
+
+  window.addEventListener('resize', onResize);
+  
+  // Mobile keyboard show/hide
+  const inputBar = document.getElementById('inputbar');
+  const mobileInput = document.getElementById('mobile-input');
+  
+  // Detect mobile
+  if (window.innerWidth < 768) {
+    inputBar.classList.add('show');
+    document.querySelector('#terminal-container').style.paddingBottom = '0';
+    
+    mobileInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') send_mobile();
+    });
+  }
+
+  term.focus();
+  connectedOnce = true;
+  return fitAddon;
+}
+
+// --- WebSocket ---
+function connect_terminal() {
+  token = document.getElementById('token-input').value.trim();
+  if (!token) return;
+  
+  localStorage.setItem('claude_token', token);
+  
+  document.getElementById('connect-dialog').classList.remove('show');
+  document.getElementById('topbar').style.display = 'flex';
+  document.getElementById('connect-error').style.display = 'none';
+  
+  set_status('connecting', 'Connecting...');
+  
+  if (!connectedOnce) {
+    init_terminal();
+  }
+
+  connect_ws();
+}
+
+function connect_ws() {
+  if (ws) {
+    try { ws.close(); } catch(e) {}
+  }
+  
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${protocol}//${window.location.host}/ws/${sessionId}?token=${token}`;
+  
+  ws = new WebSocket(url);
+  
+  ws.onopen = () => {
+    set_status('connected', 'Connected');
+    console.log('Connected to Claude Terminal');
+    
+    // Send resize on connect
+    if (term) {
+      ws.send(JSON.stringify({
+        type: 'resize',
+        cols: term.cols,
+        rows: term.rows
+      }));
+    }
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'output' && term) {
+        term.write(msg.data);
+      }
+    } catch(e) {}
+  };
+  
+  ws.onclose = (event) => {
+    set_status('disconnected', 'Disconnected');
+    console.log('Disconnected:', event.code, event.reason);
+    
+    // Auto-reconnect
+    if (connectedOnce) {
+      reconnectTimer = setTimeout(connect_ws, 2000);
+    }
+  };
+  
+  ws.onerror = (err) => {
+    console.error('WS error:', err);
+    set_status('disconnected', 'Error');
+  };
+}
+
+function set_status(status, text) {
+  const el = document.getElementById('status-indicator');
+  el.textContent = text;
+  el.className = 'status ' + status;
+}
+
+// --- Controls ---
+function restart_session() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'restart' }));
+    term.reset();
+  }
+}
+
+function send_mobile() {
+  const input = document.getElementById('mobile-input');
+  const text = input.value;
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+  
+  ws.send(JSON.stringify({ type: 'input', data: text }));
+  ws.send(JSON.stringify({ type: 'enter' }));
+  input.value = '';
+}
+
+// --- Keyboard shortcuts ---
+document.addEventListener('keydown', (e) => {
+  // Ctrl+Shift+R = restart
+  if (e.ctrlKey && e.shiftKey && e.key === 'r') {
+    e.preventDefault();
+    restart_session();
+  }
+});
+</script>
+</body>
+</html>

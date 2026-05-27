@@ -1,0 +1,29 @@
+{
+  "name": "Claude Terminal",
+  "image": "mcr.microsoft.com/devcontainers/universal:2",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "Claude Terminal",
+      "onAutoForward": "openPreview",
+      "protocol": "http"
+    }
+  },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code@latest && pip install fastapi uvicorn[standard] websockets pydantic",
+  "postStartCommand": "npx --yes @anthropic-ai/claude-code auth login --console 2>/dev/null; echo 'Claude Code ready. Run: uvicorn backend.server:app --host 0.0.0.0 --port 8080 --reload'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "bierner.markdown-preview-github-styles"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "files.exclude": {
+          "**/__pycache__": true,
+          "**/*.pyc": true
+        }
+      }
+    }
+  }
+}
