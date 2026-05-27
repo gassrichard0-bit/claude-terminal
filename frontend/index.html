@@ -204,10 +204,17 @@ let connectedOnce = false;
 
 // --- Auto-connect ---
 document.addEventListener('DOMContentLoaded', () => {
-  if (token) {
+  // Try fetching config for token
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    token = cfg.token;
     document.getElementById('token-input').value = token;
     connect_terminal();
-  }
+  }).catch(() => {
+    // Fallback: use stored or default
+    if (!token) token = 'claude123';
+    document.getElementById('token-input').value = token;
+    connect_terminal();
+  });
 });
 
 // --- Init xterm ---

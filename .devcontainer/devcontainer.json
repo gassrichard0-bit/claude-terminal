@@ -5,12 +5,16 @@
   "portsAttributes": {
     "8080": {
       "label": "Claude Terminal",
-      "onAutoForward": "openPreview",
+      "onAutoForward": "openBrowser",
       "protocol": "http"
     }
   },
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code@latest && pip install fastapi uvicorn[standard] websockets pydantic",
-  "postStartCommand": "cd /workspaces/claude-terminal && nohup python -m uvicorn backend.server:app --host 0.0.0.0 --port 8080 --ws-ping-interval 30 --ws-ping-timeout 10 > /tmp/claude-terminal.log 2>&1 & sleep 2 && echo 'Claude Terminal running on port 8080'",
+  "containerEnv": {
+    "CLAUDE_TERMINAL_TOKEN": "claude123",
+    "WORK_DIR": "/workspaces/claude-terminal"
+  },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code@latest && pip install fastapi uvicorn[standard] websockets pydantic && chmod +x /workspaces/claude-terminal/start.sh",
+  "postStartCommand": "cd /workspaces/claude-terminal && bash start.sh",
   "customizations": {
     "vscode": {
       "extensions": [
