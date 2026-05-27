@@ -20,8 +20,10 @@ sleep 2
 
 # Check it's running
 if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
-  echo "✅ Claude Terminal running on http://localhost:8080"
+  echo "✅ Claude Terminal running on port 8080"
   echo "🔑 Token: claude123"
+  echo ""
+  echo "To install Claude Code CLI: npm install -g @anthropic-ai/claude-code@latest"
 else
   echo "❌ Server failed to start. Check /tmp/claude-terminal.log"
   cat /tmp/claude-terminal.log

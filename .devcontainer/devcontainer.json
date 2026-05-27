@@ -13,14 +13,10 @@
     "CLAUDE_TERMINAL_TOKEN": "claude123",
     "WORK_DIR": "/workspaces/claude-terminal"
   },
-  "postCreateCommand": "npm install -g @anthropic-ai/claude-code@latest && pip install fastapi uvicorn[standard] websockets pydantic && chmod +x /workspaces/claude-terminal/start.sh",
+  "postCreateCommand": "pip install fastapi uvicorn[standard] websockets pydantic && chmod +x /workspaces/claude-terminal/start.sh",
   "postStartCommand": "cd /workspaces/claude-terminal && bash start.sh",
   "customizations": {
     "vscode": {
-      "extensions": [
-        "ms-python.python",
-        "bierner.markdown-preview-github-styles"
-      ],
       "settings": {
         "terminal.integrated.defaultProfile.linux": "bash",
         "files.exclude": {
