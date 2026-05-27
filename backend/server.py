@@ -46,22 +46,11 @@ class PTYSession:
         self._buffer = bytearray()
 
     def spawn(self):
-        """Fork a PTY and exec claude inside it."""
+        """Fork a PTY and exec bash. User types 'claude' when ready."""
         pid, fd = pty.fork()
         if pid == 0:
-            # Child process
             os.chdir(str(WORK_DIR))
-            
-            # Determine claude binary
-            claude_cmd = "claude"
-            for candidate in ["claude", "npx"]:
-                if os.system(f"which {candidate} >/dev/null 2>&1") == 0:
-                    break
-            
-            if claude_cmd == "npx":
-                os.execvp("npx", ["npx", "@anthropic-ai/claude-code"])
-            else:
-                os.execvp(claude_cmd, [claude_cmd])
+            os.execvp("bash", ["bash", "--login"])
             os._exit(1)
         
         self.pid = pid
