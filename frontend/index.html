@@ -2,405 +2,516 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Claude Terminal</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Mac Terminal</title>
+
+<!-- iOS PWA support -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Claude">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a1b26">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='36' fill='%231a1b26'/%3E%3Ctext x='90' y='118' font-family='-apple-system,sans-serif' font-size='80' font-weight='800' text-anchor='middle' fill='%23bb9af7'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+
+<!-- xterm.js -->
+<link rel="stylesheet" href="/xterm/xterm.min.css">
+<script src="/xterm/xterm.min.js"></script>
+<script src="/xterm/xterm-addon-fit.min.js"></script>
+<script src="/xterm/xterm-addon-web-links.min.js"></script>
+
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-  
-  body {
-    background: #0a0a0a;
-    color: #e0e0e0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
+
+  html, body {
+    background: #1a1b26;
+    height: 100%;
+    overflow: hidden;
   }
 
-  /* Top bar */
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
   .topbar {
     display: flex;
     align-items: center;
-    padding: 6px 12px;
-    background: #141414;
-    border-bottom: 1px solid #2a2a2a;
-    gap: 8px;
-    min-height: 40px;
+    padding: 6px 14px;
+    background: #24283b;
+    border-bottom: 1px solid #1f2335;
+    min-height: 38px;
     flex-shrink: 0;
+    padding-top: env(safe-area-inset-top, 6px);
   }
-  .topbar .logo {
-    font-size: 14px;
-    font-weight: 700;
-    color: #f0a030;
-    background: #1e1e1e;
-    padding: 2px 8px;
-    border-radius: 4px;
-    white-space: nowrap;
-  }
-  .topbar .status {
-    font-size: 11px;
-    color: #666;
-    margin-left: auto;
-  }
+  .topbar .logo { font-size: 12px; font-weight: 700; color: #bb9af7; }
+  .topbar .status { font-size: 11px; color: #666; margin-left: auto; }
   .topbar .status.connected { color: #4ade80; }
   .topbar .status.disconnected { color: #f87171; }
   .topbar .status.connecting { color: #facc15; }
-  .topbar button {
-    background: #2a2a2a;
-    color: #ccc;
-    border: 1px solid #444;
-    border-radius: 4px;
-    padding: 4px 10px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .topbar button:hover { background: #333; }
 
-  /* Terminal container */
-  #terminal-container {
+  /* xterm terminal container */
+  #terminal {
     flex: 1;
-    padding: 4px;
+    width: 100%;
+    min-height: 0;
+    background: #1a1b26;
+    padding: 6px 8px 0 8px;
     overflow: hidden;
+    touch-action: pan-y;
   }
-  
-  /* Mobile input bar */
+  .xterm { height: 100%; }
+  .xterm-viewport {
+    -webkit-overflow-scrolling: touch;
+    overflow-y: auto !important;
+    touch-action: pan-y;
+  }
+  .xterm-screen { touch-action: pan-y; }
+
+  /* Input bar - always visible at bottom */
   .inputbar {
-    display: none;
-    padding: 6px 10px;
-    background: #141414;
-    border-top: 1px solid #2a2a2a;
+    display: flex;
+    padding: 8px 10px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+    background: #24283b;
+    border-top: 1px solid #1f2335;
     gap: 6px;
     align-items: center;
     flex-shrink: 0;
+    position: sticky;
+    bottom: 0;
   }
-  .inputbar.show { display: flex; }
+  .inputbar .prompt-symbol {
+    color: #bb9af7;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
   .inputbar input {
     flex: 1;
-    background: #1e1e1e;
-    color: #e0e0e0;
-    border: 1px solid #333;
+    background: #1f2335;
+    color: #c0caf5;
+    border: 1px solid #414868;
     border-radius: 6px;
-    padding: 10px 12px;
+    padding: 12px;
     font-size: 16px;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
     outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    min-height: 44px;
   }
-  .inputbar input:focus { border-color: #f0a030; }
+  .inputbar input:focus { border-color: #bb9af7; }
   .inputbar button {
-    background: #f0a030;
-    color: #000;
+    background: #bb9af7;
+    color: #1a1b26;
     border: none;
     border-radius: 6px;
-    padding: 10px 16px;
-    font-size: 16px;
+    padding: 12px 20px;
+    font-size: 15px;
     font-weight: 600;
     cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    touch-action: manipulation;
+    min-height: 44px;
   }
+  .inputbar button:active { background: #9d7cd8; }
 
-  /* Connection dialog */
-  #connect-dialog {
+  /* Connecting overlay */
+  #connecting {
     display: none;
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.85);
-    z-index: 100;
+    background: #1a1b26;
+    z-index: 50;
     align-items: center;
     justify-content: center;
+    flex-direction: column;
+    gap: 16px;
   }
-  #connect-dialog.show { display: flex; }
-  #connect-dialog .card {
-    background: #1a1a1a;
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 32px;
-    max-width: 380px;
-    width: 90%;
-    text-align: center;
+  #connecting.show { display: flex; }
+  #connecting .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid #414868;
+    border-top-color: #bb9af7;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
-  #connect-dialog h2 { 
-    color: #f0a030;
-    margin-bottom: 8px;
-    font-size: 20px;
-  }
-  #connect-dialog p {
-    color: #888;
-    margin-bottom: 20px;
-    font-size: 14px;
-    line-height: 1.4;
-  }
-  #connect-dialog input {
-    width: 100%;
-    background: #222;
-    color: #e0e0e0;
-    border: 1px solid #444;
-    border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 16px;
-    outline: none;
-    margin-bottom: 12px;
-  }
-  #connect-dialog input:focus { border-color: #f0a030; }
-  #connect-dialog .connect-btn {
-    width: 100%;
-    background: #f0a030;
-    color: #000;
-    border: none;
-    border-radius: 8px;
-    padding: 12px;
-    font-size: 16px;
-    font-weight: 700;
-    cursor: pointer;
-  }
-  #connect-dialog .connect-btn:hover { background: #e09020; }
-  #connect-dialog .error-msg {
-    color: #f87171;
-    font-size: 12px;
-    margin-top: 8px;
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #connecting p { color: #888; font-size: 14px; }
+
+  /* Error snackbar */
+  #error-bar {
     display: none;
+    background: #f7768e;
+    color: #1a1b26;
+    text-align: center;
+    padding: 10px;
+    font-size: 13px;
+    flex-shrink: 0;
   }
 </style>
 </head>
 <body>
 
-<!-- Connect Dialog -->
-<div id="connect-dialog" class="show">
-  <div class="card">
-    <h2>⚡ Claude Terminal</h2>
-    <p>Enter your token to connect to your Claude Code session</p>
-    <input type="text" id="token-input" placeholder="Paste your token" autocomplete="off">
-    <button class="connect-btn" onclick="connect_terminal()">Connect</button>
-    <div class="error-msg" id="connect-error">Connection failed — check your token</div>
-  </div>
+<div class="topbar">
+  <span class="logo">⚡ MAC</span>
+  <span class="status connecting" id="status-indicator">Connecting...</span>
 </div>
 
-<!-- Top Bar -->
-<div class="topbar" id="topbar" style="display:none">
-  <span class="logo">CLAUDE</span>
-  <span style="font-size:12px;color:#666" id="session-label">claude-main</span>
-  <span class="status disconnected" id="status-indicator">Disconnected</span>
-  <button onclick="restart_session()">⟳ Restart</button>
+<div id="connecting" class="show">
+  <div class="spinner"></div>
+  <p>Connecting to your Mac...</p>
 </div>
 
-<!-- Terminal -->
-<div id="terminal-container"></div>
+<div id="error-bar"></div>
 
-<!-- Mobile Input Bar -->
-<div class="inputbar" id="inputbar">
-  <input type="text" id="mobile-input" placeholder="Type here..." autocomplete="off">
-  <button onclick="send_mobile()">Send</button>
+<div id="terminal"></div>
+
+<div class="inputbar">
+  <span class="prompt-symbol">›</span>
+  <input type="text" id="cmd-input" placeholder="Message Claude or run a command..." autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send">
+  <button id="send-btn">Send</button>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/addons/fit/fit.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/addons/web-links/web-links.min.js"></script>
 <script>
-// --- State ---
-let token = localStorage.getItem('claude_token') || '';
-let sessionId = 'claude-main';
 let ws = null;
-let term = null;
-let baseUrl = window.location.origin;
+let sessionId = 'claude-main';
+let cmdInput = document.getElementById('cmd-input');
+let statusEl = document.getElementById('status-indicator');
+let connectingEl = document.getElementById('connecting');
+let errorBar = document.getElementById('error-bar');
 let reconnectTimer = null;
-let connectedOnce = false;
+let lastToken = null;
+let keepaliveTimer = null;
 
-// --- Auto-connect ---
-document.addEventListener('DOMContentLoaded', () => {
-  // Try fetching config for token
-  fetch('/api/config').then(r => r.json()).then(cfg => {
-    token = cfg.token;
-    document.getElementById('token-input').value = token;
-    connect_terminal();
-  }).catch(() => {
-    // Fallback: use stored or default
-    if (!token) token = 'claude123';
-    document.getElementById('token-input').value = token;
-    connect_terminal();
-  });
+// --- xterm.js terminal ---
+const term = new Terminal({
+  cursorBlink: true,
+  cursorStyle: 'bar',
+  disableStdin: true,             // input flows via the bottom input bar
+  scrollback: 5000,
+  fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
+  fontSize: 13,
+  lineHeight: 1.2,
+  allowProposedApi: true,
+  theme: {
+    background: '#1a1b26',
+    foreground: '#f0f0ff',
+    cursor: '#bb9af7',
+    cursorAccent: '#1a1b26',
+    selectionBackground: '#33467c',
+    black:         '#15161e',
+    red:           '#ff7a93',
+    green:         '#b9f27c',
+    yellow:        '#ffcb6b',
+    blue:          '#82aaff',
+    magenta:       '#c792ea',
+    cyan:          '#89ddff',
+    white:         '#d6deeb',
+    brightBlack:   '#5c6370',
+    brightRed:     '#ff8eb3',
+    brightGreen:   '#c3f78e',
+    brightYellow:  '#ffd58a',
+    brightBlue:    '#9cb8ff',
+    brightMagenta: '#d6a6f0',
+    brightCyan:    '#a5e6ff',
+    brightWhite:   '#ffffff',
+  }
+});
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.loadAddon(new WebLinksAddon.WebLinksAddon());
+const termContainer = document.getElementById('terminal');
+term.open(termContainer);
+try { fitAddon.fit(); } catch(e) {}
+
+// --- Manual touch scrolling (xterm's native iOS scrolling is unreliable) ---
+// We track finger movement and call term.scrollLines() directly so scrolling
+// always works regardless of xterm's internal touch handling.
+let touchActive = false;
+let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+let touchLastY = 0;
+let touchMoved = false;
+let scrollVelocity = 0;
+let momentumRAF = null;
+
+function approx_line_height_px() {
+  // xterm font is 13px with lineHeight 1.2 in our config; render reality may vary slightly
+  return 13 * 1.2;
+}
+
+function stop_momentum() {
+  if (momentumRAF) { cancelAnimationFrame(momentumRAF); momentumRAF = null; }
+}
+
+function start_momentum() {
+  if (Math.abs(scrollVelocity) < 0.2) return;
+  const step = () => {
+    if (Math.abs(scrollVelocity) < 0.2) { momentumRAF = null; return; }
+    const lines = scrollVelocity > 0 ? Math.ceil(scrollVelocity) : Math.floor(scrollVelocity);
+    if (lines !== 0) term.scrollLines(lines);
+    scrollVelocity *= 0.92; // friction
+    momentumRAF = requestAnimationFrame(step);
+  };
+  momentumRAF = requestAnimationFrame(step);
+}
+
+termContainer.addEventListener('touchstart', (e) => {
+  stop_momentum();
+  if (e.touches.length !== 1) { touchActive = false; touchMoved = true; return; }
+  const t = e.touches[0];
+  touchActive = true;
+  touchStartX = t.clientX;
+  touchStartY = t.clientY;
+  touchLastY = t.clientY;
+  touchStartTime = Date.now();
+  touchMoved = false;
+  scrollVelocity = 0;
+}, { passive: true });
+
+termContainer.addEventListener('touchmove', (e) => {
+  if (!touchActive || e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dy = touchLastY - t.clientY;        // positive = finger up = scroll down
+  const totalDx = Math.abs(t.clientX - touchStartX);
+  const totalDy = Math.abs(t.clientY - touchStartY);
+  if (totalDx > 6 || totalDy > 6) touchMoved = true;
+
+  const lineHeight = approx_line_height_px();
+  const linesDelta = dy / lineHeight;
+  if (Math.abs(linesDelta) >= 0.5) {
+    const intDelta = linesDelta > 0 ? Math.ceil(linesDelta) : Math.floor(linesDelta);
+    term.scrollLines(intDelta);
+    touchLastY = t.clientY;
+    scrollVelocity = intDelta; // track for momentum
+  }
+}, { passive: true });
+
+termContainer.addEventListener('touchend', () => {
+  if (!touchActive) return;
+  touchActive = false;
+  const elapsed = Date.now() - touchStartTime;
+
+  // Tap (no significant movement, short hold) → focus the input bar
+  if (!touchMoved && elapsed < 400) {
+    if (!(window.getSelection && window.getSelection().toString().length > 0)) {
+      cmdInput.focus();
+    }
+    return;
+  }
+
+  // Otherwise it was a scroll gesture → apply momentum
+  start_momentum();
 });
 
-// --- Init xterm ---
-function init_terminal() {
-  const container = document.getElementById('terminal-container');
-  container.innerHTML = '';
-  
-  term = new Terminal({
-    fontSize: 13,
-    fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace",
-    cursorBlink: true,
-    cursorStyle: 'block',
-    allowProposedApi: true,
-    theme: {
-      background: '#0a0a0a',
-      foreground: '#e0e0e0',
-      cursor: '#f0a030',
-      selectionBackground: '#f0a03044',
-      black: '#000000',
-      red: '#f85149',
-      green: '#3fb950',
-      yellow: '#d29922',
-      blue: '#58a6ff',
-      magenta: '#bc8cff',
-      cyan: '#39d2c0',
-      white: '#f0f6fc',
-      brightBlack: '#484f58',
-      brightRed: '#ff7b72',
-      brightGreen: '#3fb950',
-      brightYellow: '#d29922',
-      brightBlue: '#58a6ff',
-      brightMagenta: '#bc8cff',
-      brightCyan: '#39d2c0',
-      brightWhite: '#ffffff',
-    }
-  });
+termContainer.addEventListener('touchcancel', () => {
+  touchActive = false;
+  stop_momentum();
+});
 
-  const fitAddon = new FitAddon();
-  term.loadAddon(fitAddon);
-  const webLinksAddon = new WebLinksAddon();
-  term.loadAddon(webLinksAddon);
-
-  term.open(container);
-  fitAddon.fit();
-
-  // Terminal input handling
-  term.onData(data => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'input', data: data }));
-    }
-  });
-
-  // Resize handler
-  const onResize = () => {
-    try { fitAddon.fit(); } catch(e) {}
-    if (ws && ws.readyState === WebSocket.OPEN && term) {
-      ws.send(JSON.stringify({
-        type: 'resize',
-        cols: term.cols,
-        rows: term.rows
-      }));
-    }
-  };
-
-  window.addEventListener('resize', onResize);
-  
-  // Mobile keyboard show/hide
-  const inputBar = document.getElementById('inputbar');
-  const mobileInput = document.getElementById('mobile-input');
-  
-  // Detect mobile
-  if (window.innerWidth < 768) {
-    inputBar.classList.add('show');
-    document.querySelector('#terminal-container').style.paddingBottom = '0';
-    
-    mobileInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') send_mobile();
-    });
+// Desktop wheel scroll (for testing in browser on Mac)
+termContainer.addEventListener('wheel', (e) => {
+  const lineHeight = approx_line_height_px();
+  const lines = Math.round(e.deltaY / lineHeight);
+  if (lines !== 0) {
+    term.scrollLines(lines);
+    e.preventDefault();
   }
+}, { passive: false });
 
-  term.focus();
-  connectedOnce = true;
-  return fitAddon;
+// Desktop click — focus input bar if no text is selected
+termContainer.addEventListener('click', (e) => {
+  if (window.getSelection && window.getSelection().toString().length > 0) return;
+  if (document.activeElement === cmdInput) return;
+  cmdInput.focus();
+});
+
+// --- Persistent scrollback (raw byte stream replay) ---
+const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
+const MAX_SCROLLBACK = 200000; // ~200KB of raw bytes (incl. ANSI codes)
+let streamBuffer = '';
+
+function load_scrollback() {
+  try {
+    const saved = localStorage.getItem(SCROLLBACK_KEY);
+    if (saved) {
+      streamBuffer = saved;
+      term.write(saved);
+    }
+  } catch(e) {}
 }
 
-// --- WebSocket ---
-function connect_terminal() {
-  token = document.getElementById('token-input').value.trim();
-  if (!token) return;
-  
-  localStorage.setItem('claude_token', token);
-  
-  document.getElementById('connect-dialog').classList.remove('show');
-  document.getElementById('topbar').style.display = 'flex';
-  document.getElementById('connect-error').style.display = 'none';
-  
+let save_timer = null;
+function schedule_save() {
+  if (save_timer) return;
+  save_timer = setTimeout(() => {
+    save_timer = null;
+    try {
+      if (streamBuffer.length > MAX_SCROLLBACK) {
+        streamBuffer = streamBuffer.slice(streamBuffer.length - MAX_SCROLLBACK);
+      }
+      localStorage.setItem(SCROLLBACK_KEY, streamBuffer);
+    } catch(e) {}
+  }, 600);
+}
+
+function write_to_terminal(data) {
+  term.write(data);
+  streamBuffer += data;
+  schedule_save();
+}
+
+function send_resize() {
+  try {
+    const { cols, rows } = term;
+    if (ws && ws.readyState === WebSocket.OPEN && cols && rows) {
+      ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+  } catch(e) {}
+}
+
+function fit_and_resize() {
+  try { fitAddon.fit(); } catch(e) {}
+  send_resize();
+}
+
+window.addEventListener('resize', fit_and_resize);
+
+function boot() {
+  load_scrollback();
+  fit_and_resize();
+  fetch('/api/config').then(r => r.json()).then(cfg => {
+    connect(cfg.token);
+  }).catch(() => {
+    connect('claude123');
+  });
+}
+
+function connect(token) {
+  lastToken = token;
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = `${protocol}//${location.host}/ws/${sessionId}?token=${token}`;
+
+  connectingEl.classList.add('show');
   set_status('connecting', 'Connecting...');
-  
-  if (!connectedOnce) {
-    init_terminal();
-  }
+  errorBar.style.display = 'none';
 
-  connect_ws();
-}
-
-function connect_ws() {
-  if (ws) {
-    try { ws.close(); } catch(e) {}
-  }
-  
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${window.location.host}/ws/${sessionId}?token=${token}`;
-  
   ws = new WebSocket(url);
-  
+
   ws.onopen = () => {
+    connectingEl.classList.remove('show');
     set_status('connected', 'Connected');
-    console.log('Connected to Claude Terminal');
-    
-    // Send resize on connect
-    if (term) {
-      ws.send(JSON.stringify({
-        type: 'resize',
-        cols: term.cols,
-        rows: term.rows
-      }));
-    }
+    errorBar.style.display = 'none';
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (keepaliveTimer) clearInterval(keepaliveTimer);
+    keepaliveTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'ping' })); } catch(e) {}
+      }
+    }, 25000);
+    // Send terminal size so the PTY renders correctly
+    setTimeout(fit_and_resize, 50);
+    cmdInput.focus();
   };
-  
+
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'output' && term) {
-        term.write(msg.data);
+      if (msg.type === 'output') {
+        write_to_terminal(msg.data);
       }
-    } catch(e) {}
-  };
-  
-  ws.onclose = (event) => {
-    set_status('disconnected', 'Disconnected');
-    console.log('Disconnected:', event.code, event.reason);
-    
-    // Auto-reconnect
-    if (connectedOnce) {
-      reconnectTimer = setTimeout(connect_ws, 2000);
+    } catch(e) {
+      write_to_terminal(event.data);
     }
   };
-  
-  ws.onerror = (err) => {
-    console.error('WS error:', err);
+
+  ws.onclose = () => {
+    set_status('disconnected', 'Disconnected');
+    connectingEl.classList.remove('show');
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+    if (!reconnectTimer) {
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
+    }
+  };
+
+  ws.onerror = () => {
     set_status('disconnected', 'Error');
+    connectingEl.classList.remove('show');
+    errorBar.textContent = 'Connection failed. Retrying...';
+    errorBar.style.display = 'block';
+    if (!reconnectTimer) {
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
+    }
   };
 }
 
-function set_status(status, text) {
-  const el = document.getElementById('status-indicator');
-  el.textContent = text;
-  el.className = 'status ' + status;
-}
-
-// --- Controls ---
-function restart_session() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'restart' }));
-    term.reset();
-  }
-}
-
-function send_mobile() {
-  const input = document.getElementById('mobile-input');
-  const text = input.value;
-  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-  
-  ws.send(JSON.stringify({ type: 'input', data: text }));
-  ws.send(JSON.stringify({ type: 'enter' }));
-  input.value = '';
-}
-
-// --- Keyboard shortcuts ---
-document.addEventListener('keydown', (e) => {
-  // Ctrl+Shift+R = restart
-  if (e.ctrlKey && e.shiftKey && e.key === 'r') {
-    e.preventDefault();
-    restart_session();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && lastToken) {
+    fit_and_resize();
+    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      connect(lastToken);
+    }
   }
 });
+
+window.addEventListener('online', () => {
+  if (lastToken && (!ws || ws.readyState !== WebSocket.OPEN)) {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    connect(lastToken);
+  }
+});
+
+function send_command() {
+  const text = cmdInput.value;
+  if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  // Echo the user's input locally with a distinct colored block + bright cyan text
+  // so it visually pops out from Claude's output (which uses its own palette).
+  //  \x1b[48;5;39;38;5;231;1m = bright cyan background + white fg + bold for the badge
+  //  \x1b[1;96m = bold + bright cyan for the message itself
+  write_to_terminal(
+    `\r\n\x1b[48;5;39;38;5;231;1m YOU \x1b[0m \x1b[1;96m${text}\x1b[0m\r\n`
+  );
+
+  ws.send(JSON.stringify({ type: 'input', data: text }));
+  ws.send(JSON.stringify({ type: 'enter' }));
+  cmdInput.value = '';
+}
+
+function clear_scrollback() {
+  streamBuffer = '';
+  term.clear();
+  try { localStorage.removeItem(SCROLLBACK_KEY); } catch(e) {}
+}
+
+cmdInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    send_command();
+  }
+});
+
+document.getElementById('send-btn').addEventListener('click', send_command);
+
+function set_status(s, text) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + s;
+}
+
+cmdInput.addEventListener('focus', () => {
+  setTimeout(() => {
+    cmdInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    fit_and_resize();
+  }, 300);
+});
+
+// Boot
+boot();
 </script>
 </body>
 </html>

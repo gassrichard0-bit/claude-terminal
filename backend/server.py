@@ -15,10 +15,13 @@ import signal
 import select
 import logging
 import uuid
+from typing import Optional, Union
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -39,18 +42,25 @@ class PTYSession:
     
     def __init__(self, sid: str):
         self.sid = sid
-        self.fd: int | None = None
-        self.pid: int | None = None
-        self.websocket: WebSocket | None = None
-        self._reader_task: asyncio.Task | None = None
+        self.fd: Optional[int] = None
+        self.pid: Optional[int] = None
+        self.websocket: Optional[WebSocket] = None
+        self._reader_task: Optional[asyncio.Task] = None
         self._buffer = bytearray()
 
     def spawn(self):
-        """Fork a PTY and exec bash. User types 'claude' when ready."""
+        """Fork a PTY. Auto-resumes the most recent Claude session via `claude --continue`,
+        falls back to a fresh `claude` if no prior session exists, and drops to bash if claude exits."""
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(str(WORK_DIR))
-            os.execvp("bash", ["bash", "--login"])
+            # Tell apps we support 256-color and force color output for CLIs that opt-in
+            os.environ["TERM"] = "xterm-256color"
+            os.environ["COLORTERM"] = "truecolor"
+            os.environ["FORCE_COLOR"] = "1"
+            os.environ["CLICOLOR_FORCE"] = "1"
+            startup = "claude --continue 2>/dev/null || claude; exec bash --login"
+            os.execvp("bash", ["bash", "--login", "-c", startup])
             os._exit(1)
         
         self.pid = pid
@@ -74,7 +84,7 @@ class PTYSession:
             size = struct.pack("HHHH", rows, cols, 0, 0)
             fcntl.ioctl(self.fd, termios.TIOCSWINSZ, size)
 
-    def write(self, data: str | bytes):
+    def write(self, data: Union[str, bytes]):
         """Write data to the PTY (into claude's stdin)."""
         if self.fd is None:
             return
@@ -255,10 +265,35 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 # --- Frontend ---
 
+# Serve xterm static files
+app.mount("/xterm", StaticFiles(directory=str(FRONTEND_DIR / "xterm")), name="xterm")
+
 @app.get("/")
-@app.get("/{path:path}")
 async def serve_frontend():
-    frontend_path = Path(__file__).parent.parent / "frontend" / "index.html"
+    frontend_path = FRONTEND_DIR / "index.html"
     if frontend_path.exists():
-        return FileResponse(str(frontend_path))
+        return FileResponse(
+            str(frontend_path),
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     return {"message": "Frontend not built yet"}
+
+# Serve any other static files from frontend/
+@app.get("/files/{path:path}")
+async def serve_static(path: str):
+    file_path = FRONTEND_DIR / path
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    return HTMLResponse("Not found", status_code=404)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8080"))
+    log.info(f"Starting Claude Terminal on {host}:{port}")
+    uvicorn.run(app, host=host, port=port, log_level="info")
