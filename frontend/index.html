@@ -553,18 +553,11 @@ const termContainer = document.getElementById('terminal');
 term.open(termContainer);
 try { fitAddon.fit(); } catch(e) {}
 
-// Forward direct keystrokes to the PTY + local-echo printable chars so they
-// appear instantly (no waiting on the WebSocket → PTY → app → echo round-trip).
-// PTY-side ECHO is off (server.py:64) so apps that don't do their own echo
-// won't cause a double-print; apps that DO echo (Claude TUI, bash readline)
-// will overwrite our local echo at the same cell, which is fine visually.
+// Forward direct keystrokes to the PTY. NO local echo — Claude's TUI does
+// full-screen redraws based on cursor position, and locally-echoed chars
+// shift the cursor in a way that fights with those redraws (garbled output).
+// Accepting the small round-trip delay is worth the clean display.
 term.onData((data) => {
-  // Local echo only for printable text — never echo control codes, escape
-  // sequences, or anything with high bit set (paste of unicode is fine)
-  const isControl = /[\x00-\x08\x0E-\x1F\x7F]/.test(data);
-  if (!isControl && data.length > 0) {
-    try { term.write(data); } catch(_) {}
-  }
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'input', data }));
   }
@@ -717,6 +710,8 @@ termContainer.addEventListener('click', (e) => {
 // Focus xterm's hidden helper textarea so the OS keyboard pops up and
 // term.onData fires for every keystroke.
 function focus_terminal() {
+  // Re-harden autocorrect/autocomplete each time (xterm sometimes resets attrs)
+  harden_xterm_input();
   try { term.focus(); } catch (_) {}
   // Also explicitly focus the helper textarea xterm injects (iOS Safari needs
   // an actual <textarea> in focus to show the keyboard)
