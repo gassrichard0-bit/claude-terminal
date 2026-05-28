@@ -553,14 +553,38 @@ const termContainer = document.getElementById('terminal');
 term.open(termContainer);
 try { fitAddon.fit(); } catch(e) {}
 
-// Forward direct keystrokes (raw chars, control codes, paste, etc.) to the PTY.
-// This is what makes typing INTO the terminal work — without it xterm would
-// receive keys but they'd never reach Claude / bash.
+// Forward direct keystrokes to the PTY + local-echo printable chars so they
+// appear instantly (no waiting on the WebSocket → PTY → app → echo round-trip).
+// PTY-side ECHO is off (server.py:64) so apps that don't do their own echo
+// won't cause a double-print; apps that DO echo (Claude TUI, bash readline)
+// will overwrite our local echo at the same cell, which is fine visually.
 term.onData((data) => {
+  // Local echo only for printable text — never echo control codes, escape
+  // sequences, or anything with high bit set (paste of unicode is fine)
+  const isControl = /[\x00-\x08\x0E-\x1F\x7F]/.test(data);
+  if (!isControl && data.length > 0) {
+    try { term.write(data); } catch(_) {}
+  }
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'input', data }));
   }
 });
+
+// Disable iOS autocorrect/autocomplete/autocapitalize on xterm's hidden
+// helper textarea — autocorrect is the worst thing that can happen to a
+// terminal: it inserts/changes characters as you type.
+function harden_xterm_input() {
+  const helper = termContainer.querySelector('.xterm-helper-textarea');
+  if (!helper) return;
+  helper.setAttribute('autocomplete', 'off');
+  helper.setAttribute('autocorrect', 'off');
+  helper.setAttribute('autocapitalize', 'none');
+  helper.setAttribute('spellcheck', 'false');
+  helper.setAttribute('inputmode', 'text');
+}
+// xterm may inject the helper after a tick — try once now, once after a frame
+harden_xterm_input();
+requestAnimationFrame(harden_xterm_input);
 
 // --- Touch handling ---
 //   1-finger drag      → scroll terminal (manual; xterm's iOS scroll is unreliable)
