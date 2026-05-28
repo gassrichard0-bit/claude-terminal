@@ -1347,16 +1347,40 @@ setupSave.addEventListener('click', async () => {
 
 document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
 
-// Copy the install command for a friend
-document.getElementById('copy-install').addEventListener('click', async (e) => {
+// Copy the install command for a friend.
+// iOS PWAs have a long-standing bug where navigator.clipboard.writeText
+// resolves "successfully" but the clipboard stays empty, so we use the
+// legacy execCommand('copy') path which actually works in standalone mode.
+function copy_text_ios_safe(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;';
+  document.body.appendChild(ta);
+  const prev_sel = document.getSelection().rangeCount > 0 ? document.getSelection().getRangeAt(0) : null;
+  // iOS-specific: need both a Range selection AND setSelectionRange
+  const range = document.createRange();
+  range.selectNodeContents(ta);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (_) {}
+  document.body.removeChild(ta);
+  if (prev_sel) { sel.removeAllRanges(); sel.addRange(prev_sel); }
+  return ok;
+}
+
+document.getElementById('copy-install').addEventListener('click', (e) => {
   e.preventDefault();
   const cmd = document.getElementById('install-cmd').textContent.trim();
   const btn = e.currentTarget;
-  try {
-    await navigator.clipboard.writeText(cmd);
+  const ok = copy_text_ios_safe(cmd);
+  if (ok) {
     btn.textContent = 'Copied ✓';
-  } catch (_) {
-    // Fallback: range-select the code block so the user can long-press Copy
+  } else {
+    // Last resort: range-select the visible code block so the user can long-press Copy
     const range = document.createRange();
     range.selectNodeContents(document.getElementById('install-cmd'));
     const sel = window.getSelection();
