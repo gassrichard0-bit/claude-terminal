@@ -184,6 +184,69 @@ async def get_config():
         "default_session": "claude-main"
     }
 
+@app.get("/api/messages")
+async def get_messages():
+    """Return the conversation messages from Claude's most-recent session
+    log (~/.claude/projects/*/<session>.jsonl), parsed into a clean list of
+    chat-style {role, content} entries."""
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        return {"messages": [], "session_file": None}
+
+    jsonl_files = list(projects_dir.glob("*/*.jsonl"))
+    if not jsonl_files:
+        return {"messages": [], "session_file": None}
+
+    latest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
+
+    out = []
+    try:
+        with open(latest, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg = entry.get("message") or {}
+                role = msg.get("role") or entry.get("type") or ""
+                if role not in ("user", "assistant"):
+                    continue
+
+                content = msg.get("content", "")
+                # Content may be a string or a list of parts (text / tool_use / tool_result)
+                if isinstance(content, list):
+                    pieces = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            t = part.get("type")
+                            if t == "text":
+                                pieces.append(part.get("text", ""))
+                            # skip tool_use / tool_result / thinking — they're noise for chat
+                        elif isinstance(part, str):
+                            pieces.append(part)
+                    content = "\n".join(p for p in pieces if p).strip()
+                elif isinstance(content, str):
+                    content = content.strip()
+                else:
+                    content = ""
+
+                if not content:
+                    continue
+
+                out.append({
+                    "role": role,
+                    "content": content,
+                    "timestamp": entry.get("timestamp", ""),
+                })
+    except OSError:
+        pass
+
+    return {"messages": out, "session_file": str(latest)}
+
 @app.get("/api/sessions")
 async def list_sessions():
     return {"sessions": [

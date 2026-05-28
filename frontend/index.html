@@ -50,6 +50,94 @@
   .topbar .status.disconnected { color: #f87171; }
   .topbar .status.connecting { color: #facc15; }
 
+  /* View toggle in topbar */
+  .view-toggle {
+    display: flex;
+    margin-left: 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(187,154,247,0.18);
+    border-radius: 999px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .view-btn {
+    background: transparent;
+    color: #7a8294;
+    border: none;
+    padding: 4px 11px;
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 999px;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .view-btn.active {
+    background: #bb9af7;
+    color: #1a1b26;
+  }
+
+  /* Chat-bubble view */
+  .chat-view {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 18px 14px 24px;
+    display: flex;
+    flex-direction: column;
+    background: #1a1b26;
+  }
+  .chat-empty {
+    color: #5c6370;
+    text-align: center;
+    padding: 40px 20px;
+    font-size: 14px;
+  }
+  .chat-msg {
+    max-width: 82%;
+    padding: 12px 16px;
+    border-radius: 18px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    font-size: 15px;
+    line-height: 1.5;
+    margin-top: 6px;        /* tight spacing within same speaker */
+    animation: msgIn 0.18s ease-out;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  /* Bigger gap when speaker switches */
+  .chat-msg.role-change { margin-top: 18px; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .chat-msg.user {
+    align-self: flex-end;
+    margin-left: auto;       /* force right alignment */
+    margin-right: 0;
+    background: linear-gradient(135deg, #7ac6ff 0%, #5fffea 100%);
+    color: #0f1116;
+    border-bottom-right-radius: 5px;
+    font-weight: 500;
+  }
+  .chat-msg.assistant {
+    align-self: flex-start;
+    margin-right: auto;      /* force left alignment */
+    margin-left: 0;
+    background: rgba(36, 40, 59, 0.9);
+    color: #f0f0ff;
+    border: 1px solid rgba(187, 154, 247, 0.18);
+    border-bottom-left-radius: 5px;
+  }
+  .chat-role {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin-bottom: 4px;
+    opacity: 0.7;
+  }
+  .chat-msg.user .chat-role { color: #0f1116; text-align: right; }
+  .chat-msg.assistant .chat-role { color: #bb9af7; }
+
   /* xterm terminal container */
   #terminal {
     flex: 1;
@@ -160,6 +248,10 @@
 <div class="topbar">
   <span class="logo">⚡ MAC</span>
   <span class="status connecting" id="status-indicator">Connecting...</span>
+  <div class="view-toggle">
+    <button id="view-live" class="view-btn active">Live</button>
+    <button id="view-chat" class="view-btn">Chat</button>
+  </div>
 </div>
 
 <div id="connecting" class="show">
@@ -170,6 +262,11 @@
 <div id="error-bar"></div>
 
 <div id="terminal"></div>
+
+<div id="chat-view" class="chat-view" style="display: none;">
+  <div id="chat-empty" class="chat-empty">Loading conversation history…</div>
+  <div id="chat-messages"></div>
+</div>
 
 <div class="inputbar">
   <span class="prompt-symbol">›</span>
@@ -470,17 +567,38 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Echo the user's input locally with a distinct colored block + bright cyan text
-  // so it visually pops out from Claude's output (which uses its own palette).
-  //  \x1b[48;5;39;38;5;231;1m = bright cyan background + white fg + bold for the badge
-  //  \x1b[1;96m = bold + bright cyan for the message itself
+  // Live terminal echo (existing behavior)
   write_to_terminal(
     `\r\n\x1b[48;5;39;38;5;231;1m YOU \x1b[0m \x1b[1;96m${text}\x1b[0m\r\n`
   );
 
+  // Optimistic chat-view bubble — appears instantly, no polling delay
+  if (currentView === 'chat') {
+    const prevMsg = chatMessages.lastElementChild;
+    const wasAssistant = prevMsg && prevMsg.classList.contains('assistant');
+    const el = document.createElement('div');
+    el.className = 'chat-msg user' + (wasAssistant ? ' role-change' : '');
+    const label = document.createElement('div');
+    label.className = 'chat-role';
+    label.textContent = 'You';
+    el.appendChild(label);
+    const body = document.createElement('div');
+    body.textContent = text;
+    el.appendChild(body);
+    chatMessages.appendChild(el);
+    chatEmpty.style.display = 'none';
+    lastRenderedCount++;       // we just rendered one
+    requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
+  }
+
   ws.send(JSON.stringify({ type: 'input', data: text }));
   ws.send(JSON.stringify({ type: 'enter' }));
   cmdInput.value = '';
+
+  // Poll history a few times so Claude's reply appears as soon as it's logged
+  setTimeout(loadHistory, 1200);
+  setTimeout(loadHistory, 3500);
+  setTimeout(loadHistory, 7000);
 }
 
 function clear_scrollback() {
@@ -511,6 +629,88 @@ cmdInput.addEventListener('focus', () => {
 });
 
 // Boot
+// --- Chat-bubble view (reads /api/messages) ---
+const chatView = document.getElementById('chat-view');
+const chatMessages = document.getElementById('chat-messages');
+const chatEmpty = document.getElementById('chat-empty');
+let currentView = 'live';
+let lastRenderedCount = 0;
+let historyRefreshTimer = null;
+
+function renderMessages(msgs) {
+  if (!msgs || msgs.length === 0) {
+    if (lastRenderedCount === 0) {
+      chatEmpty.textContent = 'No messages yet.';
+      chatEmpty.style.display = 'block';
+    }
+    return;
+  }
+  chatEmpty.style.display = 'none';
+  const fullRedraw = msgs.length < lastRenderedCount;
+  if (fullRedraw) { chatMessages.innerHTML = ''; lastRenderedCount = 0; }
+
+  const newCount = msgs.length - lastRenderedCount;
+  if (newCount === 0) return;
+  // Large initial load: skip the per-bubble fade-in animation so it doesn't lag
+  const skipAnim = newCount > 20;
+
+  const frag = document.createDocumentFragment();
+  for (let i = lastRenderedCount; i < msgs.length; i++) {
+    const m = msgs[i];
+    const prevRole = i > 0 ? msgs[i - 1].role : null;
+    const roleChange = prevRole && prevRole !== m.role;
+    const el = document.createElement('div');
+    el.className = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant') + (roleChange ? ' role-change' : '');
+    if (skipAnim) el.style.animation = 'none';
+    if (!prevRole || roleChange) {
+      const label = document.createElement('div');
+      label.className = 'chat-role';
+      label.textContent = m.role === 'user' ? 'You' : 'Claude';
+      el.appendChild(label);
+    }
+    const body = document.createElement('div');
+    body.textContent = m.content;
+    el.appendChild(body);
+    frag.appendChild(el);
+  }
+  chatMessages.appendChild(frag);
+  lastRenderedCount = msgs.length;
+  // RAF so layout settles before we scroll
+  requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
+}
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/messages');
+    if (!r.ok) return;
+    const data = await r.json();
+    const msgs = (data && data.messages) || [];
+    if (msgs.length === lastRenderedCount && lastRenderedCount > 0) return; // no change, skip
+    renderMessages(msgs);
+  } catch(_) {}
+}
+
+function setView(name) {
+  currentView = name;
+  document.getElementById('view-live').classList.toggle('active', name === 'live');
+  document.getElementById('view-chat').classList.toggle('active', name === 'chat');
+  termContainer.style.display = (name === 'live') ? '' : 'none';
+  chatView.style.display = (name === 'chat') ? 'flex' : 'none';
+  if (name === 'chat') {
+    loadHistory();
+    if (!historyRefreshTimer) {
+      historyRefreshTimer = setInterval(() => {
+        if (currentView === 'chat' && document.visibilityState === 'visible') loadHistory();
+      }, 5000);
+    }
+  } else {
+    if (historyRefreshTimer) { clearInterval(historyRefreshTimer); historyRefreshTimer = null; }
+    setTimeout(fit_and_resize, 50);
+  }
+}
+document.getElementById('view-live').addEventListener('click', () => setView('live'));
+document.getElementById('view-chat').addEventListener('click', () => setView('chat'));
+
 boot();
 </script>
 </body>
