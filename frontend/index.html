@@ -590,12 +590,18 @@ try { fitAddon.fit(); } catch(e) {}
 
 // Custom overlay scrollbar — iOS PWA ignores ::-webkit-scrollbar.
 // Renders a thin purple thumb on the right edge of any scrollable container.
+// RAF-throttled: scroll + MutationObserver can fire hundreds of times per
+// second during xterm streaming, and the update path does a forced layout
+// (getBoundingClientRect). Coalescing to one update per paint keeps the
+// main thread free for the iOS scroll/momentum engine.
 function attach_scroll_indicator(container) {
   const thumb = document.createElement('div');
   thumb.className = 'scroll-thumb';
   document.body.appendChild(thumb);
   let idle_timer = null;
-  function update() {
+  let raf_pending = false;
+  function do_update() {
+    raf_pending = false;
     if (container.offsetParent === null) { thumb.classList.remove('visible', 'idle'); return; }
     const rect = container.getBoundingClientRect();
     const sh = container.scrollHeight;
@@ -615,6 +621,11 @@ function attach_scroll_indicator(container) {
       thumb.classList.remove('visible');
       thumb.classList.add('idle');
     }, 1200);
+  }
+  function update() {
+    if (raf_pending) return;
+    raf_pending = true;
+    requestAnimationFrame(do_update);
   }
   container.addEventListener('scroll', update, { passive: true });
   window.addEventListener('resize', update);
