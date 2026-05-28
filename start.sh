@@ -1,15 +1,20 @@
 #!/bin/bash
-# Start Claude Terminal server
+# Start Claude Terminal server (background, port 8080).
 set -e
 
-cd /workspaces/claude-terminal
+# Resolve repo dir from this script's own location
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
 
 # Kill any existing server on port 8080
-kill $(lsof -ti:8080) 2>/dev/null || true
-sleep 1
+EXISTING_PID=$(lsof -ti:8080 2>/dev/null || true)
+if [ -n "$EXISTING_PID" ]; then
+  kill $EXISTING_PID 2>/dev/null || true
+  sleep 1
+fi
 
 # Start server in background
-nohup python -m uvicorn backend.server:app \
+nohup python3 -m uvicorn backend.server:app \
   --host 0.0.0.0 \
   --port 8080 \
   --ws-ping-interval 30 \
@@ -18,13 +23,18 @@ nohup python -m uvicorn backend.server:app \
 
 sleep 2
 
-# Check it's running
 if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
-  echo "✅ Claude Terminal running on port 8080"
-  echo "🔑 Token: claude123"
-  echo ""
-  echo "To install Claude Code CLI: npm install -g @anthropic-ai/claude-code@latest"
+  echo "✅ Claude Terminal running on http://localhost:8080"
+  echo
+  echo "Next steps:"
+  echo "  1. In another terminal:  ngrok http 8080"
+  echo "  2. Open the printed https://*.ngrok-free.dev URL on your phone"
+  echo "  3. Share → Add to Home Screen"
+  echo
+  echo "Tail logs:   tail -f /tmp/claude-terminal.log"
+  echo "Stop:        kill \$(lsof -ti:8080)"
 else
-  echo "❌ Server failed to start. Check /tmp/claude-terminal.log"
-  cat /tmp/claude-terminal.log
+  echo "❌ Server failed to start. Last 30 lines of log:"
+  tail -30 /tmp/claude-terminal.log
+  exit 1
 fi
