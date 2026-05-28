@@ -6,6 +6,11 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Install Python deps if needed (idempotent)
+if [ -f "backend/requirements.txt" ]; then
+  python3 -m pip install --user --quiet -r backend/requirements.txt 2>/dev/null || true
+fi
+
 # Kill any existing server on port 8080
 EXISTING_PID=$(lsof -ti:8080 2>/dev/null || true)
 if [ -n "$EXISTING_PID" ]; then
