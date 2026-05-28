@@ -49,6 +49,20 @@
   .topbar .status.connected { color: #4ade80; }
   .topbar .status.disconnected { color: #f87171; }
   .topbar .status.connecting { color: #facc15; }
+  .topbar .restart-btn {
+    margin-left: 8px;
+    background: transparent;
+    color: #7a8294;
+    border: 1px solid rgba(187,154,247,0.18);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .topbar .restart-btn:active { color: #f7768e; border-color: #f7768e; }
 
   /* View toggle in topbar */
   .view-toggle {
@@ -248,6 +262,7 @@
 <div class="topbar">
   <span class="logo">⚡ MAC</span>
   <span class="status connecting" id="status-indicator">Connecting...</span>
+  <button class="restart-btn" id="restart-btn" title="Restart Claude session">⟳</button>
   <div class="view-toggle">
     <button id="view-live" class="view-btn active">Live</button>
     <button id="view-chat" class="view-btn">Chat</button>
@@ -621,6 +636,17 @@ function set_status(s, text) {
   statusEl.className = 'status ' + s;
 }
 
+function flash_status(text) {
+  const orig = statusEl.textContent;
+  const origClass = statusEl.className;
+  statusEl.textContent = text;
+  statusEl.className = 'status connecting';
+  setTimeout(() => {
+    statusEl.textContent = orig;
+    statusEl.className = origClass;
+  }, 2000);
+}
+
 cmdInput.addEventListener('focus', () => {
   setTimeout(() => {
     cmdInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -637,6 +663,8 @@ let currentView = 'live';
 let lastRenderedCount = 0;
 let historyRefreshTimer = null;
 
+// Append-only renderer. With the new /api/messages?since=N API, `msgs` is the
+// delta (only messages after `lastRenderedCount`), so we always append.
 function renderMessages(msgs) {
   if (!msgs || msgs.length === 0) {
     if (lastRenderedCount === 0) {
@@ -646,18 +674,16 @@ function renderMessages(msgs) {
     return;
   }
   chatEmpty.style.display = 'none';
-  const fullRedraw = msgs.length < lastRenderedCount;
-  if (fullRedraw) { chatMessages.innerHTML = ''; lastRenderedCount = 0; }
 
-  const newCount = msgs.length - lastRenderedCount;
-  if (newCount === 0) return;
-  // Large initial load: skip the per-bubble fade-in animation so it doesn't lag
-  const skipAnim = newCount > 20;
+  // Detect previous role from the last rendered bubble (for speaker-change gap)
+  const lastEl = chatMessages.lastElementChild;
+  let prevRole = lastEl ? (lastEl.classList.contains('user') ? 'user' : 'assistant') : null;
+
+  // Skip the fade-in animation on a big initial dump so it doesn't lag
+  const skipAnim = msgs.length > 20;
 
   const frag = document.createDocumentFragment();
-  for (let i = lastRenderedCount; i < msgs.length; i++) {
-    const m = msgs[i];
-    const prevRole = i > 0 ? msgs[i - 1].role : null;
+  for (const m of msgs) {
     const roleChange = prevRole && prevRole !== m.role;
     const el = document.createElement('div');
     el.className = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant') + (roleChange ? ' role-change' : '');
@@ -672,20 +698,21 @@ function renderMessages(msgs) {
     body.textContent = m.content;
     el.appendChild(body);
     frag.appendChild(el);
+    prevRole = m.role;
   }
   chatMessages.appendChild(frag);
-  lastRenderedCount = msgs.length;
+  lastRenderedCount += msgs.length;
   // RAF so layout settles before we scroll
   requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
 }
 
 async function loadHistory() {
   try {
-    const r = await fetch('/api/messages');
+    const r = await fetch('/api/messages?since=' + lastRenderedCount);
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
-    if (msgs.length === lastRenderedCount && lastRenderedCount > 0) return; // no change, skip
+    if (msgs.length === 0) return;
     renderMessages(msgs);
   } catch(_) {}
 }
@@ -710,6 +737,15 @@ function setView(name) {
 }
 document.getElementById('view-live').addEventListener('click', () => setView('live'));
 document.getElementById('view-chat').addEventListener('click', () => setView('chat'));
+
+// Restart button - sends restart WebSocket message
+document.getElementById('restart-btn').addEventListener('click', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'restart' }));
+    flash_status('⟳ Restarting...');
+    setTimeout(() => { term.reset(); }, 100);
+  }
+});
 
 boot();
 </script>

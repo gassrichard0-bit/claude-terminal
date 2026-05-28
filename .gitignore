@@ -9,3 +9,6 @@ data/
 .DS_Store
 fly.toml
 deploy.sh
+
+# Local ngrok URL — personal access creds, never commit
+ngrok-url.txt

@@ -37,6 +37,9 @@ app = FastAPI(title="Claude Terminal")
 # Active PTY sessions
 sessions: dict[str, dict] = {}
 
+# Cache for /api/messages — {mtime, messages}
+_messages_cache = None
+
 class PTYSession:
     """Manages a single PTY with claude running inside it."""
     
@@ -185,10 +188,15 @@ async def get_config():
     }
 
 @app.get("/api/messages")
-async def get_messages():
+async def get_messages(since: int = 0):
     """Return the conversation messages from Claude's most-recent session
     log (~/.claude/projects/*/<session>.jsonl), parsed into a clean list of
-    chat-style {role, content} entries."""
+    chat-style {role, content} entries.
+    
+    Caches by file mtime — returns 304 if unchanged.
+    ?since=<N> returns only messages after index N.
+    """
+    global _messages_cache
     projects_dir = Path.home() / ".claude" / "projects"
     if not projects_dir.exists():
         return {"messages": [], "session_file": None}
@@ -198,7 +206,16 @@ async def get_messages():
         return {"messages": [], "session_file": None}
 
     latest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
+    mtime = latest.stat().st_mtime
 
+    # Return cached if file unchanged
+    if _messages_cache is not None and _messages_cache["mtime"] == mtime:
+        msgs = _messages_cache["messages"]
+        if since > 0:
+            msgs = msgs[since:]
+        return {"messages": msgs, "session_file": str(latest), "cached": True}
+
+    # Parse fresh
     out = []
     try:
         with open(latest, "r") as f:
@@ -217,7 +234,6 @@ async def get_messages():
                     continue
 
                 content = msg.get("content", "")
-                # Content may be a string or a list of parts (text / tool_use / tool_result)
                 if isinstance(content, list):
                     pieces = []
                     for part in content:
@@ -225,7 +241,6 @@ async def get_messages():
                             t = part.get("type")
                             if t == "text":
                                 pieces.append(part.get("text", ""))
-                            # skip tool_use / tool_result / thinking — they're noise for chat
                         elif isinstance(part, str):
                             pieces.append(part)
                     content = "\n".join(p for p in pieces if p).strip()
@@ -245,7 +260,12 @@ async def get_messages():
     except OSError:
         pass
 
-    return {"messages": out, "session_file": str(latest)}
+    _messages_cache = {"mtime": mtime, "messages": out}
+
+    if since > 0:
+        out = out[since:]
+
+    return {"messages": out, "session_file": str(latest), "cached": False}
 
 @app.get("/api/sessions")
 async def list_sessions():

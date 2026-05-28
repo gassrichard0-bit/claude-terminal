@@ -191,7 +191,7 @@ Short title (≤72 chars) + bullet body explaining the why, not the what. Always
 ```
 Co-Authored-By: <YourModelName> <noreply@anthropic.com>
 ```
-Replace `<YourModelName>` with your own (e.g. `Alex Agent V3` or whatever).
+Replace `<YourModelName>` with your own (`Alex Agent` is fine).
 
 ## 9. JSONL session log format (what `/api/messages` parses)
 
