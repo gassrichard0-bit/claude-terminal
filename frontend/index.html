@@ -685,7 +685,7 @@ const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
 const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
 // Bump this string any time the byte stream format / processing changes, so
 // every device wipes its locally cached scrollback once on next load.
-const SCROLLBACK_VERSION = '2026-05-28-clean-stream';
+const SCROLLBACK_VERSION = '2026-05-28-altscreen-strip';
 const MAX_SCROLLBACK = 2_000_000; // ~2 MB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
 
@@ -722,9 +722,20 @@ function schedule_save() {
   }, 600);
 }
 
+// Strip alt-screen toggle sequences so Claude's TUI output accumulates in
+// the main buffer / scrollback (otherwise the alt buffer eats it and the
+// user can't scroll back). Tradeoff: Claude's in-place redraws will pile
+// up visually. Triple-tap the ⚡ logo to wipe whenever it gets too cluttered.
+//   1049 h/l — alt screen + cursor save  (most common)
+//   1048 h/l — cursor save only
+//   1047 h/l — alt screen without save
+//   47   h/l — legacy alt screen
+const ALT_SCREEN_RE = /\x1b\[\?(1049|1048|1047|47)[hl]/g;
+
 function write_to_terminal(data) {
-  term.write(data);
-  streamBuffer += data;
+  const stripped = data.replace(ALT_SCREEN_RE, '');
+  term.write(stripped);
+  streamBuffer += stripped;
   schedule_save();
 }
 
