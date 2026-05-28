@@ -214,6 +214,23 @@
   .xterm-viewport::-webkit-scrollbar-thumb:hover { background: rgba(187,154,247,0.65); }
   .xterm-screen { touch-action: pan-y; }
 
+  /* Custom overlay scrollbar — iOS PWA standalone mode ignores
+     ::-webkit-scrollbar, so we render our own thumb in JS. */
+  .scroll-thumb {
+    position: fixed;
+    right: 3px;
+    width: 5px;
+    min-height: 24px;
+    background: rgba(187,154,247,0.55);
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+  }
+  .scroll-thumb.visible { opacity: 0.85; }
+  .scroll-thumb.idle { opacity: 0.45; }
+
   /* Enable iOS-native long-press text selection on xterm's rendered DOM rows.
      xterm.js 5.x DOM renderer puts the text in .xterm-rows > div > span, which
      is fully DOM and therefore selectable by iOS once we opt in here. */
@@ -570,6 +587,47 @@ term.loadAddon(new WebLinksAddon.WebLinksAddon());
 const termContainer = document.getElementById('terminal');
 term.open(termContainer);
 try { fitAddon.fit(); } catch(e) {}
+
+// Custom overlay scrollbar — iOS PWA ignores ::-webkit-scrollbar.
+// Renders a thin purple thumb on the right edge of any scrollable container.
+function attach_scroll_indicator(container) {
+  const thumb = document.createElement('div');
+  thumb.className = 'scroll-thumb';
+  document.body.appendChild(thumb);
+  let idle_timer = null;
+  function update() {
+    if (container.offsetParent === null) { thumb.classList.remove('visible', 'idle'); return; }
+    const rect = container.getBoundingClientRect();
+    const sh = container.scrollHeight;
+    const ch = container.clientHeight;
+    if (sh <= ch + 1) { thumb.classList.remove('visible', 'idle'); return; }
+    const ratio = ch / sh;
+    const thumb_h = Math.max(24, ch * ratio);
+    const max_scroll = sh - ch;
+    const top_offset = max_scroll > 0 ? (container.scrollTop / max_scroll) * (ch - thumb_h) : 0;
+    thumb.style.top = (rect.top + top_offset) + 'px';
+    thumb.style.right = (window.innerWidth - rect.right + 3) + 'px';
+    thumb.style.height = thumb_h + 'px';
+    thumb.classList.add('visible');
+    thumb.classList.remove('idle');
+    if (idle_timer) clearTimeout(idle_timer);
+    idle_timer = setTimeout(() => {
+      thumb.classList.remove('visible');
+      thumb.classList.add('idle');
+    }, 1200);
+  }
+  container.addEventListener('scroll', update, { passive: true });
+  window.addEventListener('resize', update);
+  const obs = new MutationObserver(update);
+  obs.observe(container, { childList: true, subtree: true, characterData: true });
+  setTimeout(update, 250);
+  return update;
+}
+
+// xterm-viewport is created by term.open(). Find it and attach.
+const xterm_vp = termContainer.querySelector('.xterm-viewport');
+if (xterm_vp) attach_scroll_indicator(xterm_vp);
+attach_scroll_indicator(document.getElementById('chat-view'));
 
 // Forward direct keystrokes to the PTY. NO local echo — Claude's TUI does
 // full-screen redraws based on cursor position, and locally-echoed chars
