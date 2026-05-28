@@ -631,9 +631,12 @@ function attach_scroll_indicator(container) {
 }
 
 // xterm-viewport is created by term.open(). Find it and attach.
+// Capture the updaters so setView can re-check visibility on view switch
+// (otherwise the hidden view's thumb stays painted at its last position).
+const scrollIndicatorUpdates = [];
 const xterm_vp = termContainer.querySelector('.xterm-viewport');
-if (xterm_vp) attach_scroll_indicator(xterm_vp);
-attach_scroll_indicator(document.getElementById('chat-view'));
+if (xterm_vp) scrollIndicatorUpdates.push(attach_scroll_indicator(xterm_vp));
+scrollIndicatorUpdates.push(attach_scroll_indicator(document.getElementById('chat-view')));
 
 // Forward direct keystrokes to the PTY. NO local echo — Claude's TUI does
 // full-screen redraws based on cursor position, and locally-echoed chars
@@ -1325,6 +1328,9 @@ function setView(name) {
   document.getElementById('view-chat').classList.toggle('active', name === 'chat');
   termContainer.style.display = (name === 'live') ? '' : 'none';
   chatView.style.display = (name === 'chat') ? 'flex' : 'none';
+  // Re-evaluate each scroll-indicator so the hidden view's thumb hides
+  // and the visible one repositions for the now-visible container.
+  for (const upd of scrollIndicatorUpdates) upd();
   if (name === 'chat') {
     loadHistory();
     if (!historyRefreshTimer) {
