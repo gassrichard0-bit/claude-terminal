@@ -749,18 +749,28 @@ function load_scrollback() {
   } catch(e) {}
 }
 
+// Persist the scrollback to localStorage, but defer it off the hot path so
+// the 2MB write (50–200ms on iOS Safari) doesn't block xterm rendering.
 let save_timer = null;
+const SAVE_DEBOUNCE_MS = 1500;
 function schedule_save() {
   if (save_timer) return;
   save_timer = setTimeout(() => {
     save_timer = null;
-    try {
-      if (streamBuffer.length > MAX_SCROLLBACK) {
-        streamBuffer = streamBuffer.slice(streamBuffer.length - MAX_SCROLLBACK);
-      }
-      localStorage.setItem(SCROLLBACK_KEY, streamBuffer);
-    } catch(e) {}
-  }, 600);
+    const doSave = () => {
+      try {
+        if (streamBuffer.length > MAX_SCROLLBACK) {
+          streamBuffer = streamBuffer.slice(streamBuffer.length - MAX_SCROLLBACK);
+        }
+        localStorage.setItem(SCROLLBACK_KEY, streamBuffer);
+      } catch(_) {}
+    };
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(doSave, { timeout: 3000 });
+    } else {
+      setTimeout(doSave, 0);
+    }
+  }, SAVE_DEBOUNCE_MS);
 }
 
 // Strip alt-screen toggle sequences so Claude's TUI output accumulates in
