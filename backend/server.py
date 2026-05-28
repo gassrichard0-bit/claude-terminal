@@ -274,16 +274,59 @@ def _slice_messages(all_msgs, since: int, limit: int, last: int):
         sliced = sliced[:limit]
     return sliced, start
 
+def _parse_jsonl(path: Path):
+    """Yield (role, content, timestamp) tuples from one Claude session JSONL."""
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message") or {}
+                role = msg.get("role") or entry.get("type") or ""
+                if role not in ("user", "assistant"):
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    pieces = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                pieces.append(part.get("text", ""))
+                        elif isinstance(part, str):
+                            pieces.append(part)
+                    content = "\n".join(p for p in pieces if p).strip()
+                elif isinstance(content, str):
+                    content = content.strip()
+                else:
+                    content = ""
+                if not content:
+                    continue
+                yield {
+                    "role": role,
+                    "content": content,
+                    "timestamp": entry.get("timestamp", ""),
+                }
+    except OSError:
+        return
+
 @app.get("/api/messages")
 async def get_messages(since: int = 0, limit: int = 0, last: int = 0):
-    """Return chat messages from the most-recent session JSONL.
+    """Return chat messages merged across all Claude project sessions.
+
+    Reads every *.jsonl under ~/.claude/projects/*/ and stitches them into
+    one chronological stream sorted by timestamp. Cache key is (file count,
+    max mtime) so any session append / new session reparses.
 
     ?since=<N>     skip first N messages (delta polling)
-    ?limit=<M>     return at most M messages from the slice (for paginated chunks)
+    ?limit=<M>     return at most M messages from the slice (paginated chunks)
     ?last=<N>      return only the last N messages (initial load)
     Response includes 'total' (full count) and 'start_index' (absolute index
     of the first returned message), so the client can paginate correctly.
-    Caches by JSONL mtime.
     """
     global _messages_cache
     projects_dir = Path.home() / ".claude" / "projects"
@@ -294,72 +337,41 @@ async def get_messages(since: int = 0, limit: int = 0, last: int = 0):
     if not jsonl_files:
         return {"messages": [], "session_file": None, "total": 0, "start_index": 0}
 
-    latest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
-    mtime = latest.stat().st_mtime
+    max_mtime = max(p.stat().st_mtime for p in jsonl_files)
+    fingerprint = (len(jsonl_files), max_mtime)
+    session_token = "all-projects"
 
-    # Return cached if file unchanged
-    if _messages_cache is not None and _messages_cache["mtime"] == mtime:
+    if _messages_cache is not None and _messages_cache.get("fingerprint") == fingerprint:
         all_msgs = _messages_cache["messages"]
         msgs, start = _slice_messages(all_msgs, since, limit, last)
         return {
             "messages": msgs,
-            "session_file": str(latest),
+            "session_file": session_token,
             "total": len(all_msgs),
             "start_index": start,
             "cached": True,
         }
 
-    # Parse fresh
-    out = []
-    try:
-        with open(latest, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    # Parse every session file, then sort chronologically. Entries with no
+    # timestamp sink to the end of their file's insertion order via the
+    # secondary sort keys (file mtime, line index).
+    merged = []
+    for path in jsonl_files:
+        try:
+            file_mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        for line_idx, m in enumerate(_parse_jsonl(path)):
+            merged.append((m["timestamp"] or "", file_mtime, line_idx, m))
+    merged.sort(key=lambda x: (x[0], x[1], x[2]))
+    out = [m for *_x, m in merged]
 
-                msg = entry.get("message") or {}
-                role = msg.get("role") or entry.get("type") or ""
-                if role not in ("user", "assistant"):
-                    continue
-
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    pieces = []
-                    for part in content:
-                        if isinstance(part, dict):
-                            t = part.get("type")
-                            if t == "text":
-                                pieces.append(part.get("text", ""))
-                        elif isinstance(part, str):
-                            pieces.append(part)
-                    content = "\n".join(p for p in pieces if p).strip()
-                elif isinstance(content, str):
-                    content = content.strip()
-                else:
-                    content = ""
-
-                if not content:
-                    continue
-
-                out.append({
-                    "role": role,
-                    "content": content,
-                    "timestamp": entry.get("timestamp", ""),
-                })
-    except OSError:
-        pass
-
-    _messages_cache = {"mtime": mtime, "messages": out, "session_file": str(latest)}
+    _messages_cache = {"fingerprint": fingerprint, "messages": out, "session_file": session_token}
     msgs, start = _slice_messages(out, since, limit, last)
 
     return {
         "messages": msgs,
-        "session_file": str(latest),
+        "session_file": session_token,
         "total": len(out),
         "start_index": start,
         "cached": False,
