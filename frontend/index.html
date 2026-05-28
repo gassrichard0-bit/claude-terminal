@@ -170,6 +170,19 @@
   }
   .xterm-screen { touch-action: pan-y; }
 
+  /* Enable iOS-native long-press text selection on xterm's rendered DOM rows.
+     xterm.js 5.x DOM renderer puts the text in .xterm-rows > div > span, which
+     is fully DOM and therefore selectable by iOS once we opt in here. */
+  .xterm, .xterm-screen, .xterm-rows, .xterm-rows > div {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+  /* When the terminal is in "select" mode (after long-press), drop touch-action
+     so iOS owns subsequent touches → its selection handles + Copy popover work. */
+  #terminal.select-mode { touch-action: auto; }
+  #terminal.select-mode .xterm-screen { touch-action: auto; }
+
   /* Input bar - always visible at bottom */
   .inputbar {
     display: flex;
@@ -341,15 +354,20 @@ const termContainer = document.getElementById('terminal');
 term.open(termContainer);
 try { fitAddon.fit(); } catch(e) {}
 
-// --- Manual touch scrolling (xterm's native iOS scrolling is unreliable) ---
-// We track finger movement and call term.scrollLines() directly so scrolling
-// always works regardless of xterm's internal touch handling.
+// --- Touch handling ---
+//   1-finger drag      → scroll terminal (manual; xterm's iOS scroll is unreliable)
+//   tap                → focus input bar
+//   long-press (350ms) → stop intercepting touches so iOS's native text-
+//                        selection UI (blue handles + Copy popover) takes over
 let touchActive = false;
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
 let touchLastY = 0;
 let touchMoved = false;
 let scrollVelocity = 0;
 let momentumRAF = null;
+let longPressTimer = null;
+let nativeSelectMode = false;
+const LONG_PRESS_MS = 350;
 
 function approx_line_height_px() {
   // xterm font is 13px with lineHeight 1.2 in our config; render reality may vary slightly
@@ -374,6 +392,13 @@ function start_momentum() {
 
 termContainer.addEventListener('touchstart', (e) => {
   stop_momentum();
+  // New touch starts — exit any active iOS selection mode from a prior gesture
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  if (nativeSelectMode && !window.getSelection().toString()) {
+    termContainer.classList.remove('select-mode');
+    nativeSelectMode = false;
+  }
+
   if (e.touches.length !== 1) { touchActive = false; touchMoved = true; return; }
   const t = e.touches[0];
   touchActive = true;
@@ -383,44 +408,58 @@ termContainer.addEventListener('touchstart', (e) => {
   touchStartTime = Date.now();
   touchMoved = false;
   scrollVelocity = 0;
+
+  // After a still hold, hand control to iOS for native text selection.
+  longPressTimer = setTimeout(() => {
+    if (!touchActive || touchMoved) return;
+    nativeSelectMode = true;
+    termContainer.classList.add('select-mode');
+    touchActive = false;          // stop intercepting touches in this gesture
+  }, LONG_PRESS_MS);
 }, { passive: true });
 
 termContainer.addEventListener('touchmove', (e) => {
+  if (nativeSelectMode) return;   // iOS owns this gesture
   if (!touchActive || e.touches.length !== 1) return;
   const t = e.touches[0];
-  const dy = touchLastY - t.clientY;        // positive = finger up = scroll down
   const totalDx = Math.abs(t.clientX - touchStartX);
   const totalDy = Math.abs(t.clientY - touchStartY);
-  if (totalDx > 6 || totalDy > 6) touchMoved = true;
+  if (totalDx > 6 || totalDy > 6) {
+    touchMoved = true;
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  }
 
+  const dy = touchLastY - t.clientY;
   const lineHeight = approx_line_height_px();
   const linesDelta = dy / lineHeight;
   if (Math.abs(linesDelta) >= 0.5) {
     const intDelta = linesDelta > 0 ? Math.ceil(linesDelta) : Math.floor(linesDelta);
     term.scrollLines(intDelta);
     touchLastY = t.clientY;
-    scrollVelocity = intDelta; // track for momentum
+    scrollVelocity = intDelta;
   }
 }, { passive: true });
 
 termContainer.addEventListener('touchend', () => {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  if (nativeSelectMode) return;   // iOS is showing handles; don't focus input
   if (!touchActive) return;
   touchActive = false;
   const elapsed = Date.now() - touchStartTime;
 
-  // Tap (no significant movement, short hold) → focus the input bar
-  if (!touchMoved && elapsed < 400) {
+  // Tap (no movement, short hold) → focus the input bar
+  if (!touchMoved && elapsed < LONG_PRESS_MS) {
     if (!(window.getSelection && window.getSelection().toString().length > 0)) {
       cmdInput.focus();
     }
     return;
   }
 
-  // Otherwise it was a scroll gesture → apply momentum
   start_momentum();
 });
 
 termContainer.addEventListener('touchcancel', () => {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   touchActive = false;
   stop_momentum();
 });
@@ -700,10 +739,15 @@ function renderMessages(msgs) {
     frag.appendChild(el);
     prevRole = m.role;
   }
+  // Only stick to bottom if the user was already near the bottom (within 100px).
+  // Otherwise they're reading history — don't yank them down.
+  const wasNearBottom = (chatView.scrollHeight - chatView.scrollTop - chatView.clientHeight) < 100;
+
   chatMessages.appendChild(frag);
   lastRenderedCount += msgs.length;
-  // RAF so layout settles before we scroll
-  requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
+  if (wasNearBottom) {
+    requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
+  }
 }
 
 async function loadHistory() {
