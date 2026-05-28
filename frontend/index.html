@@ -111,7 +111,16 @@
     display: flex;
     flex-direction: column;
     background: #1a1b26;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(187,154,247,0.45) transparent;
   }
+  .chat-view::-webkit-scrollbar { width: 8px; }
+  .chat-view::-webkit-scrollbar-track { background: transparent; }
+  .chat-view::-webkit-scrollbar-thumb {
+    background: rgba(187,154,247,0.45);
+    border-radius: 4px;
+  }
+  .chat-view::-webkit-scrollbar-thumb:hover { background: rgba(187,154,247,0.65); }
   .chat-empty {
     color: #5c6370;
     text-align: center;
@@ -193,7 +202,16 @@
     -webkit-overflow-scrolling: touch;
     overflow-y: auto !important;
     touch-action: pan-y;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(187,154,247,0.45) transparent;
   }
+  .xterm-viewport::-webkit-scrollbar { width: 8px; }
+  .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background: rgba(187,154,247,0.45);
+    border-radius: 4px;
+  }
+  .xterm-viewport::-webkit-scrollbar-thumb:hover { background: rgba(187,154,247,0.65); }
   .xterm-screen { touch-action: pan-y; }
 
   /* Enable iOS-native long-press text selection on xterm's rendered DOM rows.
