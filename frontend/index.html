@@ -1082,9 +1082,11 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Live terminal echo (existing behavior)
+  // Live terminal echo — purple to match the app accent (#bb9af7).
+  // Two leading newlines + line-clear so we don't land on top of Claude's
+  // prompt redraw region (overlap was visible in canvas mode).
   write_to_terminal(
-    `\r\n\x1b[48;5;39;38;5;231;1m YOU \x1b[0m \x1b[1;96m${text}\x1b[0m\r\n`
+    `\r\n\x1b[2K\r\x1b[48;2;187;154;247;38;2;26;27;38;1m YOU \x1b[0m \x1b[1;38;2;187;154;247m${text}\x1b[0m\r\n`
   );
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
