@@ -516,7 +516,7 @@ let keepaliveTimer = null;
 const term = new Terminal({
   cursorBlink: true,
   cursorStyle: 'bar',
-  disableStdin: true,             // input flows via the bottom input bar
+  disableStdin: false,            // allow direct typing into the terminal (raw char-by-char to PTY)
   scrollback: 5000,
   fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
   fontSize: 13,
@@ -552,6 +552,15 @@ term.loadAddon(new WebLinksAddon.WebLinksAddon());
 const termContainer = document.getElementById('terminal');
 term.open(termContainer);
 try { fitAddon.fit(); } catch(e) {}
+
+// Forward direct keystrokes (raw chars, control codes, paste, etc.) to the PTY.
+// This is what makes typing INTO the terminal work — without it xterm would
+// receive keys but they'd never reach Claude / bash.
+term.onData((data) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'input', data }));
+  }
+});
 
 // --- Touch handling ---
 //   1-finger drag      → scroll terminal (manual; xterm's iOS scroll is unreliable)
@@ -646,10 +655,12 @@ termContainer.addEventListener('touchend', () => {
   touchActive = false;
   const elapsed = Date.now() - touchStartTime;
 
-  // Tap (no movement, short hold) → focus the input bar
+  // Tap (no movement, short hold) → focus xterm so iOS keyboard pops up
+  // and direct typing into the terminal works. (User can still tap the
+  // bottom input bar directly when they want line-buffered input.)
   if (!touchMoved && elapsed < LONG_PRESS_MS) {
     if (!(window.getSelection && window.getSelection().toString().length > 0)) {
-      cmdInput.focus();
+      focus_terminal();
     }
     return;
   }
@@ -673,12 +684,23 @@ termContainer.addEventListener('wheel', (e) => {
   }
 }, { passive: false });
 
-// Desktop click — focus input bar if no text is selected
+// Desktop click — focus terminal so keys go straight to PTY
 termContainer.addEventListener('click', (e) => {
   if (window.getSelection && window.getSelection().toString().length > 0) return;
-  if (document.activeElement === cmdInput) return;
-  cmdInput.focus();
+  focus_terminal();
 });
+
+// Focus xterm's hidden helper textarea so the OS keyboard pops up and
+// term.onData fires for every keystroke.
+function focus_terminal() {
+  try { term.focus(); } catch (_) {}
+  // Also explicitly focus the helper textarea xterm injects (iOS Safari needs
+  // an actual <textarea> in focus to show the keyboard)
+  const helper = termContainer.querySelector('.xterm-helper-textarea');
+  if (helper) {
+    try { helper.focus(); } catch (_) {}
+  }
+}
 
 // --- Persistent scrollback (raw byte stream replay) ---
 const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
