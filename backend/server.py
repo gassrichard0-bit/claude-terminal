@@ -20,6 +20,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 from pydantic import BaseModel
@@ -33,6 +34,16 @@ WORK_DIR = Path(os.environ.get("WORK_DIR", str(Path.home() / "app")))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Claude Terminal")
+
+# CORS: the frontend can be served from a different origin than the backend
+# (BYOM model — one shared web app, each user points it at their own Mac).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Active PTY sessions
 sessions: dict[str, dict] = {}

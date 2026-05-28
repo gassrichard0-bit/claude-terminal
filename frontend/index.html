@@ -258,6 +258,92 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   #connecting p { color: #888; font-size: 14px; }
 
+  /* Setup / Settings modal */
+  .setup-modal {
+    position: fixed; inset: 0;
+    background: rgba(15, 16, 26, 0.92);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    z-index: 300;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  .setup-modal.show { display: flex; }
+  .setup-card {
+    background: #1a1b26;
+    border: 1px solid rgba(187, 154, 247, 0.25);
+    border-radius: 18px;
+    padding: 24px 22px;
+    width: 100%; max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .setup-card h2 {
+    margin: 0; color: #f0f0ff; font-size: 22px; font-weight: 800;
+    letter-spacing: 0.3px;
+  }
+  .setup-sub { margin: 0; color: #7a8294; font-size: 14px; }
+  .setup-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #c0caf5; }
+  .setup-card label span small { color: #5c6370; font-weight: 400; }
+  .setup-card input {
+    background: rgba(15, 16, 26, 0.7);
+    color: #f0f0ff;
+    border: 1px solid rgba(187, 154, 247, 0.25);
+    border-radius: 10px;
+    padding: 11px 13px;
+    font-size: 15px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    outline: none;
+    -webkit-appearance: none; appearance: none;
+    min-height: 44px;
+  }
+  .setup-card input:focus {
+    border-color: #bb9af7;
+    box-shadow: 0 0 0 3px rgba(187,154,247,0.15);
+  }
+  .setup-help {
+    margin: 4px 0 0;
+    color: #5c6370; font-size: 12px; line-height: 1.5;
+  }
+  .setup-help code {
+    display: block; margin-top: 6px;
+    background: rgba(0,0,0,0.4); padding: 8px 10px; border-radius: 6px;
+    color: #9efbc8; font-size: 11px; word-break: break-all;
+    -webkit-user-select: all; user-select: all;
+  }
+  .setup-actions { display: flex; gap: 8px; margin-top: 4px; }
+  .setup-actions button {
+    flex: 1;
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 15px; font-weight: 700;
+    border: none;
+    cursor: pointer;
+    min-height: 44px;
+    -webkit-appearance: none; appearance: none;
+  }
+  .setup-primary {
+    background: linear-gradient(135deg, #bb9af7 0%, #9d7cd8 100%);
+    color: #1a1b26;
+  }
+  .setup-secondary {
+    background: transparent;
+    color: #c0caf5;
+    border: 1px solid rgba(187,154,247,0.25) !important;
+  }
+
+  /* Settings gear in topbar */
+  .topbar-gear {
+    background: transparent;
+    color: #7a8294;
+    border: none;
+    font-size: 18px;
+    padding: 4px 8px;
+    cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+  }
+  .topbar-gear:active { color: #bb9af7; }
+
   /* Error snackbar */
   #error-bar {
     display: none;
@@ -273,13 +359,14 @@
 <body>
 
 <div class="topbar">
-  <span class="logo">⚡ MAC</span>
+  <span class="logo">⚡ <span id="logo-name">MAC</span></span>
   <span class="status connecting" id="status-indicator">Connecting...</span>
   <button class="restart-btn" id="restart-btn" title="Restart Claude session">⟳</button>
   <div class="view-toggle">
     <button id="view-live" class="view-btn active">Live</button>
     <button id="view-chat" class="view-btn">Chat</button>
   </div>
+  <button class="topbar-gear" id="settings-btn" title="Settings">⚙</button>
 </div>
 
 <div id="connecting" class="show">
@@ -288,6 +375,34 @@
 </div>
 
 <div id="error-bar"></div>
+
+<!-- First-time setup / settings modal: each user enters their own Mac URL -->
+<div id="setup-modal" class="setup-modal" style="display: none;">
+  <div class="setup-card">
+    <h2>Welcome to Code</h2>
+    <p class="setup-sub">Connect this app to your own Mac.</p>
+    <label>
+      <span>Your name</span>
+      <input id="setup-name" type="text" placeholder="e.g. Richard" autocomplete="off">
+    </label>
+    <label>
+      <span>Your Mac's URL <small>(ngrok or local)</small></span>
+      <input id="setup-url" type="url" placeholder="https://your-id.ngrok-free.dev" autocomplete="off" autocapitalize="none" spellcheck="false">
+    </label>
+    <label>
+      <span>Auth token <small>(leave blank to auto-fetch)</small></span>
+      <input id="setup-token" type="text" placeholder="optional" autocomplete="off" autocapitalize="none" spellcheck="false">
+    </label>
+    <p class="setup-help">
+      Don't have a Mac URL yet? On your Mac run:<br>
+      <code>curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
+    </p>
+    <div class="setup-actions">
+      <button id="setup-cancel" class="setup-secondary">Cancel</button>
+      <button id="setup-save" class="setup-primary">Connect</button>
+    </div>
+  </div>
+</div>
 
 <div id="terminal"></div>
 
@@ -532,20 +647,62 @@ function fit_and_resize() {
 
 window.addEventListener('resize', fit_and_resize);
 
+// --- User config (BYOM) ---
+// Each user enters their own Mac URL + name; stored in localStorage.
+const CONFIG_KEY = 'claude-terminal-config';
+let userConfig = (function () {
+  try {
+    const raw = localStorage.getItem(CONFIG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+})();
+
+function saveConfig(cfg) {
+  userConfig = cfg;
+  try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (_) {}
+  applyConfig();
+}
+function applyConfig() {
+  const logoName = document.getElementById('logo-name');
+  if (userConfig && userConfig.name) {
+    logoName.textContent = userConfig.name.toUpperCase();
+  }
+}
+
+// Compute the backend base URL the user pointed at (no trailing slash).
+function backendBase() {
+  if (userConfig && userConfig.backendUrl) {
+    return userConfig.backendUrl.replace(/\/+$/, '');
+  }
+  return location.origin;          // fallback: same origin (where this HTML was served from)
+}
+function backendUrlAbs(path) {
+  return backendBase() + path;
+}
+function backendWsUrl(path) {
+  const base = backendBase();
+  return base.replace(/^http/, 'ws') + path;
+}
+
 function boot() {
   load_scrollback();
   fit_and_resize();
-  fetch('/api/config').then(r => r.json()).then(cfg => {
-    connect(cfg.token);
+  applyConfig();
+  // If user hasn't set up yet, show the setup modal and wait
+  if (!userConfig || !userConfig.backendUrl) {
+    openSetup(true);
+    return;
+  }
+  fetch(backendUrlAbs('/api/config')).then(r => r.json()).then(cfg => {
+    connect((userConfig && userConfig.token) || cfg.token);
   }).catch(() => {
-    connect('claude123');
+    connect((userConfig && userConfig.token) || 'claude123');
   });
 }
 
 function connect(token) {
   lastToken = token;
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${location.host}/ws/${sessionId}?token=${token}`;
+  const url = backendWsUrl(`/ws/${sessionId}?token=${encodeURIComponent(token)}`);
 
   connectingEl.classList.add('show');
   set_status('connecting', 'Connecting...');
@@ -754,7 +911,7 @@ let currentSessionFile = null;
 
 async function loadHistory() {
   try {
-    const r = await fetch('/api/messages?since=' + lastRenderedCount);
+    const r = await fetch(backendUrlAbs('/api/messages?since=' + lastRenderedCount));
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
@@ -769,7 +926,7 @@ async function loadHistory() {
       chatMessages.innerHTML = '';
       lastRenderedCount = 0;
       currentSessionFile = sessionFile;
-      const r2 = await fetch('/api/messages?since=0');
+      const r2 = await fetch(backendUrlAbs('/api/messages?since=0'));
       if (r2.ok) {
         const d2 = await r2.json();
         renderMessages((d2 && d2.messages) || []);
@@ -811,6 +968,57 @@ document.getElementById('restart-btn').addEventListener('click', () => {
     setTimeout(() => { term.reset(); }, 100);
   }
 });
+
+// --- Setup / Settings modal handlers ---
+const setupModal = document.getElementById('setup-modal');
+const setupName = document.getElementById('setup-name');
+const setupUrl = document.getElementById('setup-url');
+const setupToken = document.getElementById('setup-token');
+const setupCancel = document.getElementById('setup-cancel');
+const setupSave = document.getElementById('setup-save');
+
+function openSetup(firstRun) {
+  // Prefill if we already have config
+  if (userConfig) {
+    setupName.value = userConfig.name || '';
+    setupUrl.value = userConfig.backendUrl || '';
+    setupToken.value = userConfig.token || '';
+  }
+  setupCancel.style.display = firstRun ? 'none' : '';
+  setupModal.style.display = 'flex';
+  setupModal.classList.add('show');
+  setTimeout(() => setupUrl.focus(), 50);
+}
+function closeSetup() {
+  setupModal.classList.remove('show');
+  setupModal.style.display = 'none';
+}
+
+setupCancel.addEventListener('click', closeSetup);
+
+setupSave.addEventListener('click', () => {
+  let url = setupUrl.value.trim();
+  if (!url) { setupUrl.focus(); return; }
+  // Auto-prepend https:// if user just typed a host
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  const cfg = {
+    name: setupName.value.trim() || 'You',
+    backendUrl: url,
+    token: setupToken.value.trim() || '',
+  };
+  saveConfig(cfg);
+  closeSetup();
+  // Close any existing WS and reconnect to the new backend
+  if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  // Reset chat state — we're effectively connecting to a different session
+  chatMessages.innerHTML = '';
+  lastRenderedCount = 0;
+  currentSessionFile = null;
+  boot();
+});
+
+document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
 
 boot();
 </script>
