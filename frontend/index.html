@@ -301,6 +301,21 @@
     border-color: #bb9af7;
     box-shadow: 0 0 0 3px rgba(187,154,247,0.15);
   }
+  .setup-error {
+    color: #ff5370;
+    background: rgba(255, 83, 112, 0.1);
+    border: 1px solid rgba(255, 83, 112, 0.3);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 13px;
+    display: none;
+  }
+  .setup-error.show { display: block; }
+  .setup-error.ok {
+    color: #5cffaf;
+    background: rgba(92, 255, 175, 0.08);
+    border-color: rgba(92, 255, 175, 0.3);
+  }
   .setup-help {
     margin: 4px 0 0;
     color: #5c6370; font-size: 12px; line-height: 1.5;
@@ -397,6 +412,7 @@
       Don't have a Mac URL yet? On your Mac run:<br>
       <code>curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
     </p>
+    <div id="setup-error" class="setup-error"></div>
     <div class="setup-actions">
       <button id="setup-cancel" class="setup-secondary">Cancel</button>
       <button id="setup-save" class="setup-primary">Connect</button>
@@ -996,26 +1012,68 @@ function closeSetup() {
 
 setupCancel.addEventListener('click', closeSetup);
 
-setupSave.addEventListener('click', () => {
+const setupError = document.getElementById('setup-error');
+function showSetupMessage(msg, kind) {
+  setupError.textContent = msg;
+  setupError.classList.toggle('ok', kind === 'ok');
+  setupError.classList.add('show');
+}
+function clearSetupMessage() {
+  setupError.textContent = '';
+  setupError.classList.remove('show', 'ok');
+}
+
+setupSave.addEventListener('click', async () => {
   let url = setupUrl.value.trim();
-  if (!url) { setupUrl.focus(); return; }
-  // Auto-prepend https:// if user just typed a host
+  if (!url) { setupUrl.focus(); showSetupMessage("Your Mac's URL is required.", 'err'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  url = url.replace(/\/+$/, '');
+
+  // Validate the URL by hitting /api/health
+  setupSave.disabled = true;
+  setupSave.textContent = 'Testing…';
+  clearSetupMessage();
+  let ok = false;
+  try {
+    const r = await fetch(url + '/api/health', { method: 'GET' });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.status === 'ok') ok = true;
+    }
+  } catch (e) {
+    showSetupMessage("Couldn't reach that URL. Check the address, that the server is running on it, and (if it's https) that the cert is valid.", 'err');
+  }
+  setupSave.disabled = false;
+  setupSave.textContent = 'Connect';
+
+  if (!ok) {
+    if (!setupError.classList.contains('show')) {
+      showSetupMessage("Server didn't respond ok. Is Claude Terminal running on this URL?", 'err');
+    }
+    return;
+  }
+
+  showSetupMessage('Connected ✓', 'ok');
+
   const cfg = {
     name: setupName.value.trim() || 'You',
     backendUrl: url,
     token: setupToken.value.trim() || '',
   };
   saveConfig(cfg);
-  closeSetup();
-  // Close any existing WS and reconnect to the new backend
-  if (ws) { try { ws.close(); } catch (_) {} ws = null; }
-  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  // Reset chat state — we're effectively connecting to a different session
-  chatMessages.innerHTML = '';
-  lastRenderedCount = 0;
-  currentSessionFile = null;
-  boot();
+
+  setTimeout(() => {
+    closeSetup();
+    clearSetupMessage();
+    // Close any existing WS and reconnect to the new backend
+    if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    // Reset chat state — we're effectively connecting to a different session
+    chatMessages.innerHTML = '';
+    lastRenderedCount = 0;
+    currentSessionFile = null;
+    boot();
+  }, 600);
 });
 
 document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
