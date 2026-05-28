@@ -682,8 +682,21 @@ termContainer.addEventListener('click', (e) => {
 
 // --- Persistent scrollback (raw byte stream replay) ---
 const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
-const MAX_SCROLLBACK = 200000; // ~200KB of raw bytes (incl. ANSI codes)
+const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
+// Bump this string any time the byte stream format / processing changes, so
+// every device wipes its locally cached scrollback once on next load.
+const SCROLLBACK_VERSION = '2026-05-28-clean-stream';
+const MAX_SCROLLBACK = 2_000_000; // ~2 MB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
+
+// One-time wipe when SCROLLBACK_VERSION changes — clears stale dirty saves
+// (e.g. from yesterday's alt-screen-stripping era that captured duplicate frames).
+try {
+  if (localStorage.getItem(SCROLLBACK_VERSION_KEY) !== SCROLLBACK_VERSION) {
+    localStorage.removeItem(SCROLLBACK_KEY);
+    localStorage.setItem(SCROLLBACK_VERSION_KEY, SCROLLBACK_VERSION);
+  }
+} catch(_) {}
 
 function load_scrollback() {
   try {
