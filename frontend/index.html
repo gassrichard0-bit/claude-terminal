@@ -778,15 +778,15 @@ function schedule_save() {
 // pile up visually. Triple-tap the ⚡ logo to wipe when it gets cluttered.
 const ALT_SCREEN_RE = /\x1b\[\?(1049|1048|1047|47)[hl]/g;
 
-// Batch incoming chunks per animation frame (~16ms). Claude's streaming
-// emits many tiny chunks during generation; coalescing them per frame cuts
-// parser invocations + render passes and smooths the visible output without
-// adding meaningful latency.
+// Batch incoming chunks via microtask — collapses multiple WS messages that
+// land in the same JS task into one xterm.write call (cheaper parsing and
+// rendering), but flushes before the next paint so there's no perceptible
+// added latency for single chars. Best of both: instant + smooth.
 let writeBuffer = '';
-let writeRAF = null;
+let writeScheduled = false;
 
 function flushWrites() {
-  writeRAF = null;
+  writeScheduled = false;
   if (writeBuffer.length === 0) return;
   const data = writeBuffer;
   writeBuffer = '';
@@ -798,7 +798,10 @@ function flushWrites() {
 
 function write_to_terminal(data) {
   writeBuffer += data;
-  if (writeRAF == null) writeRAF = requestAnimationFrame(flushWrites);
+  if (!writeScheduled) {
+    writeScheduled = true;
+    queueMicrotask(flushWrites);
+  }
 }
 
 function send_resize() {
