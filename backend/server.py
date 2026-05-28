@@ -198,23 +198,37 @@ async def get_config():
         "default_session": "claude-main"
     }
 
+def _slice_messages(all_msgs, since: int, limit: int, last: int):
+    """Apply pagination params and return (sliced, start_index)."""
+    total = len(all_msgs)
+    if last > 0:
+        start = max(0, total - last)
+        return all_msgs[start:], start
+    start = max(0, since)
+    sliced = all_msgs[start:]
+    if limit > 0:
+        sliced = sliced[:limit]
+    return sliced, start
+
 @app.get("/api/messages")
-async def get_messages(since: int = 0):
-    """Return the conversation messages from Claude's most-recent session
-    log (~/.claude/projects/*/<session>.jsonl), parsed into a clean list of
-    chat-style {role, content} entries.
-    
-    Caches by file mtime — returns 304 if unchanged.
-    ?since=<N> returns only messages after index N.
+async def get_messages(since: int = 0, limit: int = 0, last: int = 0):
+    """Return chat messages from the most-recent session JSONL.
+
+    ?since=<N>     skip first N messages (delta polling)
+    ?limit=<M>     return at most M messages from the slice (for paginated chunks)
+    ?last=<N>      return only the last N messages (initial load)
+    Response includes 'total' (full count) and 'start_index' (absolute index
+    of the first returned message), so the client can paginate correctly.
+    Caches by JSONL mtime.
     """
     global _messages_cache
     projects_dir = Path.home() / ".claude" / "projects"
     if not projects_dir.exists():
-        return {"messages": [], "session_file": None}
+        return {"messages": [], "session_file": None, "total": 0, "start_index": 0}
 
     jsonl_files = list(projects_dir.glob("*/*.jsonl"))
     if not jsonl_files:
-        return {"messages": [], "session_file": None}
+        return {"messages": [], "session_file": None, "total": 0, "start_index": 0}
 
     latest = max(jsonl_files, key=lambda p: p.stat().st_mtime)
     mtime = latest.stat().st_mtime
@@ -222,12 +236,12 @@ async def get_messages(since: int = 0):
     # Return cached if file unchanged
     if _messages_cache is not None and _messages_cache["mtime"] == mtime:
         all_msgs = _messages_cache["messages"]
-        total = len(all_msgs)
-        msgs = all_msgs[since:] if since > 0 else all_msgs
+        msgs, start = _slice_messages(all_msgs, since, limit, last)
         return {
             "messages": msgs,
             "session_file": str(latest),
-            "total": total,
+            "total": len(all_msgs),
+            "start_index": start,
             "cached": True,
         }
 
@@ -277,15 +291,13 @@ async def get_messages(since: int = 0):
         pass
 
     _messages_cache = {"mtime": mtime, "messages": out, "session_file": str(latest)}
-    total = len(out)
-
-    if since > 0:
-        out = out[since:]
+    msgs, start = _slice_messages(out, since, limit, last)
 
     return {
-        "messages": out,
+        "messages": msgs,
         "session_file": str(latest),
-        "total": total,
+        "total": len(out),
+        "start_index": start,
         "cached": False,
     }
 

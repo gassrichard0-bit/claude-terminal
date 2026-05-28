@@ -45,6 +45,17 @@
     padding-top: env(safe-area-inset-top, 6px);
   }
   .topbar .logo { font-size: 12px; font-weight: 700; color: #bb9af7; }
+  .backend-host {
+    color: #5c6370;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    max-width: 30vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-left: 6px;
+  }
   .topbar .status { font-size: 11px; color: #666; margin-left: auto; }
   .topbar .status.connected { color: #4ade80; }
   .topbar .status.disconnected { color: #f87171; }
@@ -107,6 +118,21 @@
     padding: 40px 20px;
     font-size: 14px;
   }
+  .load-older {
+    align-self: center;
+    margin: 4px 0 10px;
+    background: rgba(187,154,247,0.08);
+    color: #bb9af7;
+    border: 1px solid rgba(187,154,247,0.25);
+    border-radius: 999px;
+    padding: 7px 16px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+  }
+  .load-older:active { background: rgba(187,154,247,0.2); }
+  .load-older[disabled] { opacity: 0.5; }
   .chat-msg {
     max-width: 82%;
     padding: 12px 16px;
@@ -346,6 +372,19 @@
     color: #c0caf5;
     border: 1px solid rgba(187,154,247,0.25) !important;
   }
+  .setup-disconnect {
+    background: transparent;
+    color: #ff5370;
+    border: none;
+    padding: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    align-self: center;
+    margin-top: 4px;
+  }
+  .setup-disconnect:active { color: #ff8c9c; }
 
   /* Settings gear in topbar */
   .topbar-gear {
@@ -375,6 +414,7 @@
 
 <div class="topbar">
   <span class="logo">⚡ <span id="logo-name">MAC</span></span>
+  <span class="backend-host" id="backend-host" title="Connected backend"></span>
   <span class="status connecting" id="status-indicator">Connecting...</span>
   <button class="restart-btn" id="restart-btn" title="Restart Claude session">⟳</button>
   <div class="view-toggle">
@@ -417,12 +457,14 @@
       <button id="setup-cancel" class="setup-secondary">Cancel</button>
       <button id="setup-save" class="setup-primary">Connect</button>
     </div>
+    <button id="setup-disconnect" class="setup-disconnect" style="display: none;">Disconnect &amp; forget this Mac</button>
   </div>
 </div>
 
 <div id="terminal"></div>
 
 <div id="chat-view" class="chat-view" style="display: none;">
+  <button id="load-older" class="load-older" style="display: none;">Load older messages</button>
   <div id="chat-empty" class="chat-empty">Loading conversation history…</div>
   <div id="chat-messages"></div>
 </div>
@@ -680,8 +722,22 @@ function saveConfig(cfg) {
 }
 function applyConfig() {
   const logoName = document.getElementById('logo-name');
+  const hostEl = document.getElementById('backend-host');
   if (userConfig && userConfig.name) {
     logoName.textContent = userConfig.name.toUpperCase();
+  } else {
+    logoName.textContent = 'MAC';
+  }
+  if (hostEl) {
+    if (userConfig && userConfig.backendUrl) {
+      try {
+        hostEl.textContent = new URL(userConfig.backendUrl).host;
+      } catch (_) {
+        hostEl.textContent = userConfig.backendUrl;
+      }
+    } else {
+      hostEl.textContent = '';
+    }
   }
 }
 
@@ -815,6 +871,7 @@ function send_command() {
     chatMessages.appendChild(el);
     chatEmpty.style.display = 'none';
     lastRenderedCount++;       // we just rendered one
+    loadedToIndex++;           // keep paging math in sync with the JSONL that's about to grow
     requestAnimationFrame(() => { chatView.scrollTop = chatView.scrollHeight; });
   }
 
@@ -924,36 +981,121 @@ function renderMessages(msgs) {
 }
 
 let currentSessionFile = null;
+// Pagination state — absolute indices into the server's full message list.
+let loadedFromIndex = 0;        // index of the oldest message currently rendered
+let loadedToIndex = 0;          // index AFTER the newest message currently rendered (exclusive)
+const INITIAL_LOAD = 100;
+const OLDER_CHUNK = 100;
+
+const loadOlderBtn = document.getElementById('load-older');
+
+function updateLoadOlderVisibility() {
+  loadOlderBtn.style.display = (loadedFromIndex > 0) ? '' : 'none';
+}
 
 async function loadHistory() {
   try {
-    const r = await fetch(backendUrlAbs('/api/messages?since=' + lastRenderedCount));
+    // First-ever load (or after a reset): pull just the last INITIAL_LOAD
+    const isInitial = (lastRenderedCount === 0);
+    const queryPath = isInitial
+      ? '/api/messages?last=' + INITIAL_LOAD
+      : '/api/messages?since=' + loadedToIndex;
+    const r = await fetch(backendUrlAbs(queryPath));
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
-    const total = data && typeof data.total === 'number' ? data.total : null;
+    const total = (data && typeof data.total === 'number') ? data.total : null;
+    const startIndex = (data && typeof data.start_index === 'number') ? data.start_index : 0;
     const sessionFile = data && data.session_file;
 
-    // Detect a session swap (file path changed, or total dropped below our count
-    // — e.g. a new shorter session became the "latest"). Full redraw.
+    // Detect a session swap (file path changed) or truncation. Full redraw.
     const sessionChanged = currentSessionFile && sessionFile && sessionFile !== currentSessionFile;
-    const truncated = total !== null && total < lastRenderedCount;
+    const truncated = total !== null && total < loadedToIndex;
     if (sessionChanged || truncated) {
       chatMessages.innerHTML = '';
       lastRenderedCount = 0;
+      loadedFromIndex = 0;
+      loadedToIndex = 0;
       currentSessionFile = sessionFile;
-      const r2 = await fetch(backendUrlAbs('/api/messages?since=0'));
-      if (r2.ok) {
-        const d2 = await r2.json();
-        renderMessages((d2 && d2.messages) || []);
+      updateLoadOlderVisibility();
+      // Re-load with initial paging
+      return loadHistory();
+    }
+    if (sessionFile) currentSessionFile = sessionFile;
+    if (msgs.length === 0) {
+      if (isInitial && total === 0) {
+        chatEmpty.textContent = 'No messages yet.';
+        chatEmpty.style.display = 'block';
       }
       return;
     }
-    if (sessionFile) currentSessionFile = sessionFile;
-    if (msgs.length === 0) return;
+
+    if (isInitial) {
+      loadedFromIndex = startIndex;
+      loadedToIndex = startIndex + msgs.length;
+    } else {
+      // Delta append: server returned messages starting at loadedToIndex
+      loadedToIndex += msgs.length;
+    }
     renderMessages(msgs);
+    updateLoadOlderVisibility();
   } catch(_) {}
 }
+
+async function loadOlder() {
+  if (loadedFromIndex <= 0) return;
+  loadOlderBtn.disabled = true;
+  loadOlderBtn.textContent = 'Loading…';
+  try {
+    const want = Math.min(OLDER_CHUNK, loadedFromIndex);
+    const from = loadedFromIndex - want;
+    const r = await fetch(backendUrlAbs(`/api/messages?since=${from}&limit=${want}`));
+    if (!r.ok) return;
+    const data = await r.json();
+    const older = (data && data.messages) || [];
+    if (older.length === 0) return;
+
+    // Remember the user's current viewport so we don't jump when prepending
+    const beforeScrollHeight = chatView.scrollHeight;
+    const beforeScrollTop = chatView.scrollTop;
+
+    // Prepend older bubbles to the chat
+    const frag = document.createDocumentFragment();
+    let prevRole = null;
+    for (const m of older) {
+      const roleChange = prevRole && prevRole !== m.role;
+      const el = document.createElement('div');
+      el.className = 'chat-msg ' + (m.role === 'user' ? 'user' : 'assistant') + (roleChange ? ' role-change' : '');
+      el.style.animation = 'none';
+      if (!prevRole || roleChange) {
+        const label = document.createElement('div');
+        label.className = 'chat-role';
+        label.textContent = m.role === 'user' ? 'You' : 'Claude';
+        el.appendChild(label);
+      }
+      const body = document.createElement('div');
+      body.textContent = m.content;
+      el.appendChild(body);
+      frag.appendChild(el);
+      prevRole = m.role;
+    }
+    chatMessages.insertBefore(frag, chatMessages.firstChild);
+    lastRenderedCount += older.length;
+    loadedFromIndex = from;
+    // Maintain scroll position so the user's reading spot doesn't jump
+    requestAnimationFrame(() => {
+      const newScrollHeight = chatView.scrollHeight;
+      chatView.scrollTop = beforeScrollTop + (newScrollHeight - beforeScrollHeight);
+    });
+    updateLoadOlderVisibility();
+  } catch(_) {}
+  finally {
+    loadOlderBtn.disabled = false;
+    loadOlderBtn.textContent = 'Load older messages';
+  }
+}
+
+loadOlderBtn.addEventListener('click', loadOlder);
 
 function setView(name) {
   currentView = name;
@@ -1001,6 +1143,8 @@ function openSetup(firstRun) {
     setupToken.value = userConfig.token || '';
   }
   setupCancel.style.display = firstRun ? 'none' : '';
+  const disconnectBtn = document.getElementById('setup-disconnect');
+  disconnectBtn.style.display = userConfig && userConfig.backendUrl ? '' : 'none';
   setupModal.style.display = 'flex';
   setupModal.classList.add('show');
   setTimeout(() => setupUrl.focus(), 50);
@@ -1077,6 +1221,27 @@ setupSave.addEventListener('click', async () => {
 });
 
 document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
+
+// Disconnect: wipe saved config + chat state, prompt for a new Mac
+document.getElementById('setup-disconnect').addEventListener('click', () => {
+  try { localStorage.removeItem(CONFIG_KEY); } catch (_) {}
+  userConfig = null;
+  if (ws) { try { ws.close(); } catch (_) {} ws = null; }
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  chatMessages.innerHTML = '';
+  lastRenderedCount = 0;
+  loadedFromIndex = 0;
+  loadedToIndex = 0;
+  currentSessionFile = null;
+  applyConfig();
+  setupName.value = '';
+  setupUrl.value = '';
+  setupToken.value = '';
+  clearSetupMessage();
+  document.getElementById('setup-disconnect').style.display = 'none';
+  setupCancel.style.display = 'none';
+  showSetupMessage('Disconnected. Enter a new Mac URL to connect again.', 'ok');
+});
 
 boot();
 </script>
