@@ -672,14 +672,12 @@ termContainer.addEventListener('touchend', () => {
   touchActive = false;
   const elapsed = Date.now() - touchStartTime;
 
-  // Tap (no movement, short hold) → focus the bottom input bar (line-
-  // buffered input; snappy locally, single round-trip per message).
-  // Direct stdin into xterm is still wired up (term.onData), but it's
-  // not the default on tap because per-char round-trips over the network
-  // + Claude's full-screen TUI redraws make it feel laggy.
+  // Tap (no movement, short hold) → focus xterm so iOS keyboard pops up
+  // and direct typing into the terminal works. (User can still tap the
+  // bottom input bar directly when they want line-buffered input.)
   if (!touchMoved && elapsed < LONG_PRESS_MS) {
     if (!(window.getSelection && window.getSelection().toString().length > 0)) {
-      cmdInput.focus();
+      focus_terminal();
     }
     return;
   }
@@ -703,11 +701,10 @@ termContainer.addEventListener('wheel', (e) => {
   }
 }, { passive: false });
 
-// Desktop click — focus the bottom input bar (same default as mobile tap)
+// Desktop click — focus terminal so keys go straight to PTY
 termContainer.addEventListener('click', (e) => {
   if (window.getSelection && window.getSelection().toString().length > 0) return;
-  if (document.activeElement === cmdInput) return;
-  cmdInput.focus();
+  focus_terminal();
 });
 
 // Focus xterm's hidden helper textarea so the OS keyboard pops up and
