@@ -127,21 +127,49 @@ class PTYSession:
             return b""
 
     async def reader_loop(self):
-        """Background loop: read PTY → send to WebSocket."""
+        """Background loop: read PTY → send to WebSocket.
+
+        Uses the asyncio event loop's add_reader (file-descriptor readiness
+        notification) instead of select() polling, so there's no idle delay
+        between Claude emitting bytes and our WS forwarding them. Reads are
+        also coalesced into a single WS frame when multiple chunks land in
+        the same 5ms window — this halves protocol overhead during streaming
+        bursts without adding meaningful latency."""
         loop = asyncio.get_event_loop()
-        while True:
+        data_ready = asyncio.Event()
+        loop.add_reader(self.fd, data_ready.set)
+        try:
+            while True:
+                await data_ready.wait()
+                data_ready.clear()
+                buf = bytearray()
+                # Drain everything immediately available
+                while True:
+                    chunk = self.read()
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                # Coalesce any follow-up chunks that arrive within 5 ms — this
+                # collapses Claude's tight streaming bursts into one WS frame.
+                try:
+                    await asyncio.wait_for(data_ready.wait(), timeout=0.005)
+                    data_ready.clear()
+                    while True:
+                        chunk = self.read()
+                        if not chunk:
+                            break
+                        buf.extend(chunk)
+                except asyncio.TimeoutError:
+                    pass
+                if buf:
+                    await self._send_terminal_output(bytes(buf))
+        except Exception as e:
+            log.error(f"Reader loop error for {self.sid}: {e}")
+        finally:
             try:
-                # Wait for PTY to have data
-                r, _, _ = select.select([self.fd], [], [], 0.05)
-                if r:
-                    data = self.read()
-                    if data:
-                        await self._send_terminal_output(data)
-                else:
-                    await asyncio.sleep(0.01)
-            except Exception as e:
-                log.error(f"Reader loop error for {self.sid}: {e}")
-                break
+                loop.remove_reader(self.fd)
+            except Exception:
+                pass
 
     async def _send_terminal_output(self, data: bytes):
         """Send terminal output to connected WebSocket."""
