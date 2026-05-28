@@ -210,10 +210,15 @@ async def get_messages(since: int = 0):
 
     # Return cached if file unchanged
     if _messages_cache is not None and _messages_cache["mtime"] == mtime:
-        msgs = _messages_cache["messages"]
-        if since > 0:
-            msgs = msgs[since:]
-        return {"messages": msgs, "session_file": str(latest), "cached": True}
+        all_msgs = _messages_cache["messages"]
+        total = len(all_msgs)
+        msgs = all_msgs[since:] if since > 0 else all_msgs
+        return {
+            "messages": msgs,
+            "session_file": str(latest),
+            "total": total,
+            "cached": True,
+        }
 
     # Parse fresh
     out = []
@@ -260,12 +265,18 @@ async def get_messages(since: int = 0):
     except OSError:
         pass
 
-    _messages_cache = {"mtime": mtime, "messages": out}
+    _messages_cache = {"mtime": mtime, "messages": out, "session_file": str(latest)}
+    total = len(out)
 
     if since > 0:
         out = out[since:]
 
-    return {"messages": out, "session_file": str(latest), "cached": False}
+    return {
+        "messages": out,
+        "session_file": str(latest),
+        "total": total,
+        "cached": False,
+    }
 
 @app.get("/api/sessions")
 async def list_sessions():

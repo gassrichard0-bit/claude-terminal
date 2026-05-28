@@ -750,12 +750,33 @@ function renderMessages(msgs) {
   }
 }
 
+let currentSessionFile = null;
+
 async function loadHistory() {
   try {
     const r = await fetch('/api/messages?since=' + lastRenderedCount);
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
+    const total = data && typeof data.total === 'number' ? data.total : null;
+    const sessionFile = data && data.session_file;
+
+    // Detect a session swap (file path changed, or total dropped below our count
+    // — e.g. a new shorter session became the "latest"). Full redraw.
+    const sessionChanged = currentSessionFile && sessionFile && sessionFile !== currentSessionFile;
+    const truncated = total !== null && total < lastRenderedCount;
+    if (sessionChanged || truncated) {
+      chatMessages.innerHTML = '';
+      lastRenderedCount = 0;
+      currentSessionFile = sessionFile;
+      const r2 = await fetch('/api/messages?since=0');
+      if (r2.ok) {
+        const d2 = await r2.json();
+        renderMessages((d2 && d2.messages) || []);
+      }
+      return;
+    }
+    if (sessionFile) currentSessionFile = sessionFile;
     if (msgs.length === 0) return;
     renderMessages(msgs);
   } catch(_) {}
