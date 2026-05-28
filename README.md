@@ -2,6 +2,8 @@
 
 A self-hosted, phone-friendly Claude Code terminal you open in your browser. Runs entirely on your own Mac (or Linux box) — your files, your shell, your Claude session, never leaves your machine. Use it from your phone over ngrok like a remote, polished Claude app.
 
+**Share the UI, keep the backend personal.** Anyone can open the same frontend URL on their phone — when they first launch it, they enter **their own** Mac's ngrok URL. The app then talks to *their* Mac, not the one hosting the page. Every user runs their own `claude` on their own machine; the shared web app is just the polished communication layer.
+
 ![architecture](https://img.shields.io/badge/runs%20on-your%20Mac-blueviolet) ![python](https://img.shields.io/badge/python-3.9%2B-3776ab) ![status](https://img.shields.io/badge/status-personal%20tool-success)
 
 ## What you get
