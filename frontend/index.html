@@ -667,45 +667,22 @@ harden_xterm_input();
 requestAnimationFrame(harden_xterm_input);
 
 // --- Touch handling ---
-//   1-finger drag      → scroll terminal (manual; xterm's iOS scroll is unreliable)
-//   tap                → focus input bar
-//   long-press (350ms) → stop intercepting touches so iOS's native text-
-//                        selection UI (blue handles + Copy popover) takes over
+//   1-finger drag      → native iOS scroll on .xterm-viewport (compositor-thread,
+//                        momentum, sub-pixel — smooth)
+//   tap                → focus xterm so iOS keyboard pops up for direct typing
+//   long-press (350ms) → hand control to iOS for native text selection
+//                        (blue handles + Copy popover)
+// All listeners are passive so iOS's scroll thread isn't blocked.
 let touchActive = false;
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-let touchLastY = 0;
 let touchMoved = false;
-let scrollVelocity = 0;
-let momentumRAF = null;
 let longPressTimer = null;
 let nativeSelectMode = false;
 const LONG_PRESS_MS = 350;
 
-function approx_line_height_px() {
-  // xterm font is 13px with lineHeight 1.2 in our config; render reality may vary slightly
-  return 13 * 1.2;
-}
-
-function stop_momentum() {
-  if (momentumRAF) { cancelAnimationFrame(momentumRAF); momentumRAF = null; }
-}
-
-function start_momentum() {
-  if (Math.abs(scrollVelocity) < 0.2) return;
-  const step = () => {
-    if (Math.abs(scrollVelocity) < 0.2) { momentumRAF = null; return; }
-    const lines = scrollVelocity > 0 ? Math.ceil(scrollVelocity) : Math.floor(scrollVelocity);
-    if (lines !== 0) term.scrollLines(lines);
-    scrollVelocity *= 0.92; // friction
-    momentumRAF = requestAnimationFrame(step);
-  };
-  momentumRAF = requestAnimationFrame(step);
-}
-
 termContainer.addEventListener('touchstart', (e) => {
-  stop_momentum();
-  // New touch starts — exit any active iOS selection mode from a prior gesture
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  // New touch — exit any active iOS selection mode from a prior gesture
   if (nativeSelectMode && !window.getSelection().toString()) {
     termContainer.classList.remove('select-mode');
     nativeSelectMode = false;
@@ -716,39 +693,27 @@ termContainer.addEventListener('touchstart', (e) => {
   touchActive = true;
   touchStartX = t.clientX;
   touchStartY = t.clientY;
-  touchLastY = t.clientY;
   touchStartTime = Date.now();
   touchMoved = false;
-  scrollVelocity = 0;
 
   // After a still hold, hand control to iOS for native text selection.
   longPressTimer = setTimeout(() => {
     if (!touchActive || touchMoved) return;
     nativeSelectMode = true;
     termContainer.classList.add('select-mode');
-    touchActive = false;          // stop intercepting touches in this gesture
+    touchActive = false;
   }, LONG_PRESS_MS);
 }, { passive: true });
 
 termContainer.addEventListener('touchmove', (e) => {
-  if (nativeSelectMode) return;   // iOS owns this gesture
+  // Don't intercept — iOS native scroll on .xterm-viewport does the work.
+  // Just watch for movement so we can cancel the long-press timer and
+  // know not to treat the touchend as a tap.
   if (!touchActive || e.touches.length !== 1) return;
   const t = e.touches[0];
-  const totalDx = Math.abs(t.clientX - touchStartX);
-  const totalDy = Math.abs(t.clientY - touchStartY);
-  if (totalDx > 6 || totalDy > 6) {
+  if (Math.abs(t.clientX - touchStartX) > 6 || Math.abs(t.clientY - touchStartY) > 6) {
     touchMoved = true;
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-  }
-
-  const dy = touchLastY - t.clientY;
-  const lineHeight = approx_line_height_px();
-  const linesDelta = dy / lineHeight;
-  if (Math.abs(linesDelta) >= 0.5) {
-    const intDelta = linesDelta > 0 ? Math.ceil(linesDelta) : Math.floor(linesDelta);
-    term.scrollLines(intDelta);
-    touchLastY = t.clientY;
-    scrollVelocity = intDelta;
   }
 }, { passive: true });
 
@@ -760,33 +725,18 @@ termContainer.addEventListener('touchend', () => {
   const elapsed = Date.now() - touchStartTime;
 
   // Tap (no movement, short hold) → focus xterm so iOS keyboard pops up
-  // and direct typing into the terminal works. (User can still tap the
-  // bottom input bar directly when they want line-buffered input.)
+  // for direct typing.
   if (!touchMoved && elapsed < LONG_PRESS_MS) {
     if (!(window.getSelection && window.getSelection().toString().length > 0)) {
       focus_terminal();
     }
-    return;
   }
-
-  start_momentum();
-});
+}, { passive: true });
 
 termContainer.addEventListener('touchcancel', () => {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   touchActive = false;
-  stop_momentum();
-});
-
-// Desktop wheel scroll (for testing in browser on Mac)
-termContainer.addEventListener('wheel', (e) => {
-  const lineHeight = approx_line_height_px();
-  const lines = Math.round(e.deltaY / lineHeight);
-  if (lines !== 0) {
-    term.scrollLines(lines);
-    e.preventDefault();
-  }
-}, { passive: false });
+}, { passive: true });
 
 // Desktop click — focus terminal so keys go straight to PTY
 termContainer.addEventListener('click', (e) => {
