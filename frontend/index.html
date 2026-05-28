@@ -1348,46 +1348,56 @@ setupSave.addEventListener('click', async () => {
 document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
 
 // Copy the install command for a friend.
-// iOS PWAs have a long-standing bug where navigator.clipboard.writeText
-// resolves "successfully" but the clipboard stays empty, so we use the
-// legacy execCommand('copy') path which actually works in standalone mode.
-function copy_text_ios_safe(text) {
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.setAttribute('readonly', '');
-  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;';
-  document.body.appendChild(ta);
-  const prev_sel = document.getSelection().rangeCount > 0 ? document.getSelection().getRangeAt(0) : null;
-  // iOS-specific: need both a Range selection AND setSelectionRange
-  const range = document.createRange();
-  range.selectNodeContents(ta);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
-  ta.setSelectionRange(0, text.length);
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch (_) {}
-  document.body.removeChild(ta);
-  if (prev_sel) { sel.removeAllRanges(); sel.addRange(prev_sel); }
-  return ok;
-}
-
+// iOS standalone PWA quirks:
+//   - navigator.clipboard.writeText silently no-ops in some iOS PWA contexts
+//     (resolves OK, clipboard stays empty)
+//   - execCommand('copy') on an offscreen/opacity:0 textarea also fails
+//   - But execCommand('copy') on a Range selection of a *visible* element
+//     does work reliably
+// Strategy: try navigator.clipboard first (best on modern Android/desktop),
+// then fall back to selecting the visible <code> element and running
+// execCommand. If even that fails, leave the selection up so the user can
+// hit iOS's native "Copy" popover.
 document.getElementById('copy-install').addEventListener('click', (e) => {
   e.preventDefault();
-  const cmd = document.getElementById('install-cmd').textContent.trim();
+  const code_el = document.getElementById('install-cmd');
+  const cmd = code_el.textContent.trim();
   const btn = e.currentTarget;
-  const ok = copy_text_ios_safe(cmd);
-  if (ok) {
-    btn.textContent = 'Copied ✓';
-  } else {
-    // Last resort: range-select the visible code block so the user can long-press Copy
+  let copied = false;
+
+  // Path A: range-select the visible code, run execCommand. Most reliable on iOS PWA.
+  try {
     const range = document.createRange();
-    range.selectNodeContents(document.getElementById('install-cmd'));
+    range.selectNodeContents(code_el);
     const sel = window.getSelection();
-    sel.removeAllRanges(); sel.addRange(range);
-    btn.textContent = 'Selected — long-press to copy';
+    sel.removeAllRanges();
+    sel.addRange(range);
+    copied = document.execCommand('copy');
+    if (copied) sel.removeAllRanges();
+  } catch (_) {}
+
+  // Path B: try navigator.clipboard.writeText as a backup (fires async, can't
+  // verify, but if execCommand succeeded we already updated the UI).
+  if (!copied && navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(cmd).then(() => {
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => { btn.textContent = 'Copy install command'; }, 2000);
+    }).catch(() => {});
   }
-  setTimeout(() => { btn.textContent = 'Copy install command'; }, 2000);
+
+  if (copied) {
+    btn.textContent = 'Copied ✓';
+    setTimeout(() => { btn.textContent = 'Copy install command'; }, 2000);
+  } else if (!navigator.clipboard) {
+    // Leave the visible selection so the user can long-press and tap Copy
+    const range = document.createRange();
+    range.selectNodeContents(code_el);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    btn.textContent = 'Long-press → Copy';
+    setTimeout(() => { btn.textContent = 'Copy install command'; }, 3000);
+  }
 });
 
 // Disconnect: wipe saved config + chat state, prompt for a new Mac
