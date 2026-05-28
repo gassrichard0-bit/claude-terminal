@@ -117,14 +117,21 @@ class PTYSession:
         if char in ctrl_map:
             self.write(ctrl_map[char])
 
-    def read(self) -> bytes:
-        """Read available data from PTY. Non-blocking."""
+    def read(self) -> Optional[bytes]:
+        """Read available data from PTY (non-blocking).
+
+        Returns bytes when data is available, b"" when the fd is readable but
+        nothing's ready (rare with O_NONBLOCK + add_reader), and None on EOF
+        or fd error — callers MUST stop reading after None or they'll spin."""
         if self.fd is None:
-            return b""
+            return None
         try:
-            return os.read(self.fd, 65536)
-        except (BlockingIOError, OSError):
+            data = os.read(self.fd, 65536)
+            return data if data else None  # zero-length read = EOF
+        except BlockingIOError:
             return b""
+        except OSError:
+            return None  # EIO when slave hangs up, EBADF if fd was closed
 
     async def reader_loop(self):
         """Background loop: read PTY → send to WebSocket.
@@ -134,40 +141,69 @@ class PTYSession:
         between Claude emitting bytes and our WS forwarding them. Reads are
         also coalesced into a single WS frame when multiple chunks land in
         the same 5ms window — this halves protocol overhead during streaming
-        bursts without adding meaningful latency."""
+        bursts without adding meaningful latency.
+
+        Bulletproofing:
+        - Captures fd locally so concurrent cleanup() can't trip remove_reader.
+        - Detects EOF (child exited / pty closed) and breaks instead of
+          busy-spinning on a permanently-readable closed fd.
+        - Caps per-iteration buffer at 1 MiB so a runaway producer can't
+          balloon memory before we send.
+        - Lets CancelledError propagate so cleanup().cancel() works."""
         loop = asyncio.get_event_loop()
         data_ready = asyncio.Event()
-        loop.add_reader(self.fd, data_ready.set)
+        fd = self.fd
+        if fd is None:
+            return
+        MAX_COALESCE = 1 << 20  # 1 MiB
+        try:
+            loop.add_reader(fd, data_ready.set)
+        except Exception as e:
+            log.error(f"add_reader failed for {self.sid}: {e}")
+            return
         try:
             while True:
                 await data_ready.wait()
                 data_ready.clear()
                 buf = bytearray()
+                eof = False
                 # Drain everything immediately available
-                while True:
+                while len(buf) < MAX_COALESCE:
                     chunk = self.read()
+                    if chunk is None:
+                        eof = True
+                        break
                     if not chunk:
                         break
                     buf.extend(chunk)
                 # Coalesce any follow-up chunks that arrive within 5 ms — this
                 # collapses Claude's tight streaming bursts into one WS frame.
-                try:
-                    await asyncio.wait_for(data_ready.wait(), timeout=0.005)
-                    data_ready.clear()
-                    while True:
-                        chunk = self.read()
-                        if not chunk:
-                            break
-                        buf.extend(chunk)
-                except asyncio.TimeoutError:
-                    pass
+                if not eof and len(buf) < MAX_COALESCE:
+                    try:
+                        await asyncio.wait_for(data_ready.wait(), timeout=0.005)
+                        data_ready.clear()
+                        while len(buf) < MAX_COALESCE:
+                            chunk = self.read()
+                            if chunk is None:
+                                eof = True
+                                break
+                            if not chunk:
+                                break
+                            buf.extend(chunk)
+                    except asyncio.TimeoutError:
+                        pass
                 if buf:
                     await self._send_terminal_output(bytes(buf))
+                if eof:
+                    log.info(f"Reader loop EOF for {self.sid}")
+                    break
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.error(f"Reader loop error for {self.sid}: {e}")
         finally:
             try:
-                loop.remove_reader(self.fd)
+                loop.remove_reader(fd)
             except Exception:
                 pass
 
