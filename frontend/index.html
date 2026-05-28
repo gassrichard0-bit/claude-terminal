@@ -764,20 +764,31 @@ function schedule_save() {
 }
 
 // Strip alt-screen toggle sequences so Claude's TUI output accumulates in
-// the main buffer / scrollback (otherwise the alt buffer eats it and the
-// user can't scroll back). Tradeoff: Claude's in-place redraws will pile
-// up visually. Triple-tap the ⚡ logo to wipe whenever it gets too cluttered.
-//   1049 h/l — alt screen + cursor save  (most common)
-//   1048 h/l — cursor save only
-//   1047 h/l — alt screen without save
-//   47   h/l — legacy alt screen
+// the main buffer / scrollback. Tradeoff: Claude's in-place redraws will
+// pile up visually. Triple-tap the ⚡ logo to wipe when it gets cluttered.
 const ALT_SCREEN_RE = /\x1b\[\?(1049|1048|1047|47)[hl]/g;
 
-function write_to_terminal(data) {
+// Batch incoming chunks per animation frame (~16ms). Claude's streaming
+// emits many tiny chunks during generation; coalescing them per frame cuts
+// parser invocations + render passes and smooths the visible output without
+// adding meaningful latency.
+let writeBuffer = '';
+let writeRAF = null;
+
+function flushWrites() {
+  writeRAF = null;
+  if (writeBuffer.length === 0) return;
+  const data = writeBuffer;
+  writeBuffer = '';
   const stripped = data.replace(ALT_SCREEN_RE, '');
   term.write(stripped);
   streamBuffer += stripped;
   schedule_save();
+}
+
+function write_to_terminal(data) {
+  writeBuffer += data;
+  if (writeRAF == null) writeRAF = requestAnimationFrame(flushWrites);
 }
 
 function send_resize() {
