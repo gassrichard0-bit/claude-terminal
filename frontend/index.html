@@ -361,6 +361,19 @@
     color: #9efbc8; font-size: 11px; word-break: break-all;
     -webkit-user-select: all; user-select: all;
   }
+  .setup-copy {
+    margin-top: 8px;
+    background: rgba(187,154,247,0.1);
+    color: #bb9af7;
+    border: 1px solid rgba(187,154,247,0.3);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+  }
+  .setup-copy:active { background: rgba(187,154,247,0.25); }
   .setup-actions { display: flex; gap: 8px; margin-top: 4px; }
   .setup-actions button {
     flex: 1;
@@ -462,7 +475,8 @@
     </details>
     <p class="setup-help">
       Don't have a Mac URL yet? On your Mac run:<br>
-      <code>curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
+      <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
+      <button id="copy-install" class="setup-copy">Copy install command</button>
     </p>
     <div id="setup-error" class="setup-error"></div>
     <div class="setup-actions">
@@ -1243,6 +1257,25 @@ setupSave.addEventListener('click', async () => {
 });
 
 document.getElementById('settings-btn').addEventListener('click', () => openSetup(false));
+
+// Copy the install command for a friend
+document.getElementById('copy-install').addEventListener('click', async (e) => {
+  e.preventDefault();
+  const cmd = document.getElementById('install-cmd').textContent.trim();
+  const btn = e.currentTarget;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    btn.textContent = 'Copied ✓';
+  } catch (_) {
+    // Fallback: range-select the code block so the user can long-press Copy
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('install-cmd'));
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    btn.textContent = 'Selected — long-press to copy';
+  }
+  setTimeout(() => { btn.textContent = 'Copy install command'; }, 2000);
+});
 
 // Disconnect: wipe saved config + chat state, prompt for a new Mac
 document.getElementById('setup-disconnect').addEventListener('click', () => {
