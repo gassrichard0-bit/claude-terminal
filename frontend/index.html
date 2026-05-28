@@ -342,6 +342,15 @@
     background: rgba(92, 255, 175, 0.08);
     border-color: rgba(92, 255, 175, 0.3);
   }
+  .setup-advanced {
+    color: #7a8294; font-size: 12px;
+  }
+  .setup-advanced summary {
+    cursor: pointer; padding: 6px 0;
+    color: #bb9af7; font-weight: 600;
+    -webkit-user-select: none; user-select: none;
+  }
+  .setup-advanced summary:hover { color: #d6a6f0; }
   .setup-help {
     margin: 4px 0 0;
     color: #5c6370; font-size: 12px; line-height: 1.5;
@@ -444,10 +453,13 @@
       <span>Your Mac's URL <small>(ngrok or local)</small></span>
       <input id="setup-url" type="url" placeholder="https://your-id.ngrok-free.dev" autocomplete="off" autocapitalize="none" spellcheck="false">
     </label>
-    <label>
-      <span>Auth token <small>(leave blank to auto-fetch)</small></span>
-      <input id="setup-token" type="text" placeholder="optional" autocomplete="off" autocapitalize="none" spellcheck="false">
-    </label>
+    <details class="setup-advanced">
+      <summary>Advanced</summary>
+      <label>
+        <span>Auth token <small>(leave blank to auto-fetch)</small></span>
+        <input id="setup-token" type="text" placeholder="optional" autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+    </details>
     <p class="setup-help">
       Don't have a Mac URL yet? On your Mac run:<br>
       <code>curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
@@ -809,10 +821,17 @@ function connect(token) {
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     set_status('disconnected', 'Disconnected');
     connectingEl.classList.remove('show');
     if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+    // 4001 = bad/missing token (server's close code). Show clear message + open settings.
+    if (ev && ev.code === 4001) {
+      errorBar.textContent = 'Auth token rejected by ' + (userConfig ? userConfig.backendUrl : 'this server') + '. Open Settings ⚙ to fix.';
+      errorBar.style.display = 'block';
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      return;
+    }
     if (!reconnectTimer) {
       reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
     }
@@ -821,7 +840,7 @@ function connect(token) {
   ws.onerror = () => {
     set_status('disconnected', 'Error');
     connectingEl.classList.remove('show');
-    errorBar.textContent = 'Connection failed. Retrying...';
+    errorBar.textContent = 'Could not reach ' + (userConfig && userConfig.backendUrl ? userConfig.backendUrl : 'the server') + '. Retrying…';
     errorBar.style.display = 'block';
     if (!reconnectTimer) {
       reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
@@ -1136,11 +1155,14 @@ const setupCancel = document.getElementById('setup-cancel');
 const setupSave = document.getElementById('setup-save');
 
 function openSetup(firstRun) {
-  // Prefill if we already have config
+  // Prefill if we already have config; on first run hint the page's own origin
+  // (so the user hosting this page is one-tap configured).
   if (userConfig) {
     setupName.value = userConfig.name || '';
     setupUrl.value = userConfig.backendUrl || '';
     setupToken.value = userConfig.token || '';
+  } else if (firstRun) {
+    setupUrl.value = location.origin;
   }
   setupCancel.style.display = firstRun ? 'none' : '';
   const disconnectBtn = document.getElementById('setup-disconnect');

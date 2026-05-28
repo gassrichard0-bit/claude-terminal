@@ -222,18 +222,33 @@ After any non-trivial change:
 
 ## 11. TODO list — finish the project from here
 
-Roughly priority-ordered. Pick what feels solid, ship in small commits.
+Big push on 2026-05-27 closed out most of this list. Updated status:
 
-1. **Native iOS selection in xterm.** Long-press + drag currently calls `term.select()` / `term.selectLines()`. The user wants the real iOS handles + popover. Investigate forcing xterm's DOM renderer (instead of canvas) and `user-select: text` on `.xterm-rows` so iOS recognizes selectable text. Hard problem; if not solvable, document why and stop.
-2. **`/api/messages` caching.** Add file-mtime check; return 304 / cached payload if unchanged. Or add `?since=<count>` query parameter so only new messages travel the wire.
-3. **Rotate the leaked PAT** (§8.3). Don't ship anything else until this is done — security-first.
-4. **Delete or finish `fly.toml`, `Dockerfile`, `docker-compose.yml`, `deploy.sh`.** They imply a cloud-deploy story we abandoned. Either remove them with a `Remove abandoned cloud-deploy scaffolding` commit, or take them across the finish line as an opt-in path. Default: delete.
-5. **`start.sh` should install Python deps idempotently.** After `git pull` users sometimes need new deps. Add a `python3 -m pip install --user --quiet -r requirements.txt` step. Create `requirements.txt` if missing.
-6. **Stop / restart affordance from the Web App.** Currently triple-tap logo wipes scrollback. Consider adding a long-press logo gesture to send a `restart` WebSocket message (server already supports it — see `server.py:240` `restart` handler).
-7. **Make the chat view scrollable to the very top** (oldest message). Initial scroll-to-bottom is correct, but check that scrolling up doesn't get stuck. Add a small "Load older" sentinel if there are >500 messages and only render the last 200 initially.
-8. **Polish the install.sh** on a fresh Mac: test from scratch in a clean user account (or VM). Likely friction: Apple's Python 3.9 lacks some packages; Node may need manual install; ngrok requires an account + authtoken.
-9. **Update README** with a screen recording or GIF of the phone PWA in action. Linked from the repo's README would be a nice touch.
-10. **Consider a `requirements.txt` or `pyproject.toml`** to lock Python deps. Right now `install.sh` just `pip install`s the latest of each.
+1. ✅ **Native iOS selection.** Added `-webkit-user-select: text` + long-press bailout so iOS shows native blue handles + Copy popover.
+2. ✅ **`/api/messages` caching.** mtime-keyed cache; `?since=N` delta; new `?last=N` / `?limit=M` / `start_index` for pagination.
+3. ⚠️ **Rotate the leaked PAT** — pending (Richard's action; all commits stay local until done).
+4. ✅ **Deleted stale `fly.toml` / `Dockerfile` / `docker-compose.yml` / `deploy.sh`.**
+5. ✅ **`start.sh` installs deps** via `pip install --user -r backend/requirements.txt`.
+6. ✅ **Restart button** in topbar (⟳) sends `{type:'restart'}` over WebSocket.
+7. ✅ **"Load older" pagination.** Initial load = last 100; button fetches 100 more, preserves scroll.
+8. ⚠️ **install.sh fresh-Mac test** — not yet on a clean VM.
+9. ⚠️ **README screencap / GIF** — needs Richard to record.
+10. ✅ **`backend/requirements.txt`** present and pinned.
+
+### Added beyond the original list
+
+- **BYOM (Bring Your Own Mac):** setup modal lets friends point the shared web app at their own Mac. CORS enabled. URL pre-fills with `location.origin`.
+- **URL validation** in setup: pings `/api/health` before saving, inline error or green "Connected ✓".
+- **Disconnect button** in settings (wipes config + chat).
+- **Backend host indicator** in topbar.
+- **Auth-token field** hidden under "Advanced" disclosure.
+- **WebSocket close code 4001** triggers a clear "Auth token rejected → open Settings" error bar.
+- **Session-file swap detection** — full redraw when Claude rotates the JSONL.
+
+### Still nice-to-haves
+
+- Fresh-VM install.sh shake-down.
+- "Share this app" affordance — copy the one-line install command to clipboard.
 
 ## 12. If you get stuck
 
