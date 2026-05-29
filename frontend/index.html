@@ -1113,15 +1113,8 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Live terminal echo — same ▌ purple style as the pre-fill history.
-  // Padded with enough trailing newlines that the echo line gets pushed
-  // ABOVE the visible viewport before Claude's TUI redraws. Claude only
-  // paints the visible area; scrollback above survives. Result: every
-  // user message persists in scrollback as a purple ▌ line.
-  const rows = term.rows || 24;
-  write_to_terminal(
-    `\r\n\x1b[2K\r\x1b[1;38;5;141m▌ ${text}\x1b[0m\r\n` + '\r\n'.repeat(rows)
-  );
+  // No inline echo — Claude's TUI shows the sent message in his rendering.
+  // Past messages still appear purple via the pre-fill on connect.
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
   if (currentView === 'chat') {
