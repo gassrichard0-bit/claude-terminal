@@ -25,14 +25,23 @@
 
   html, body {
     background: #1a1b26;
+    /* Mobile Safari address bar collapses/expands during scroll, changing
+       the value of vh/100%. dvh (dynamic viewport height) tracks the
+       actual visible area in real time. Fallback to 100% for older browsers. */
     height: 100%;
+    height: 100dvh;
     overflow: hidden;
+    /* Block pull-to-refresh and edge bounce in mobile Safari — those gestures
+       compete with our custom scroll handlers and break the experience. */
+    overscroll-behavior: none;
   }
 
   body {
     display: flex;
     flex-direction: column;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* Don't let Safari hijack horizontal swipes for back-navigation */
+    touch-action: pan-y;
   }
 
   .topbar {
