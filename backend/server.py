@@ -548,12 +548,15 @@ async def list_sessions(_: str = Depends(require_token)):
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """Live terminal session over WebSocket."""
+    # Accept FIRST so the 4001 close code actually reaches the browser.
+    # Closing before accept logs as plain HTTP 403 and the client never
+    # learns to re-prompt — it just retries forever.
+    await websocket.accept()
     token = websocket.query_params.get("token", "")
     if token != AUTH_TOKEN:
+        log.warning(f"WS rejected: bad token from {websocket.client.host if websocket.client else '?'}")
         await websocket.close(code=4001, reason="Invalid token")
         return
-
-    await websocket.accept()
     log.info(f"WS connected: session={session_id}")
 
     # Get or create PTY session
