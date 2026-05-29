@@ -1073,12 +1073,9 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Live terminal echo — purple to match the app accent.
-  // Using 256-color (141 ≈ #af87ff) instead of 24-bit RGB; canvas renderer
-  // was downgrading the truecolor escape to a default-style fallback,
-  // hence the 'grey highlighter / beige words' look. 256-color is rock-solid.
+  // Live terminal echo — purple text, no badge. (Badge removed per request.)
   write_to_terminal(
-    `\r\n\x1b[2K\r\x1b[48;5;141;38;5;232;1m YOU \x1b[0m \x1b[1;38;5;141m${text}\x1b[0m\r\n`
+    `\r\n\x1b[2K\r\x1b[1;38;5;141m${text}\x1b[0m\r\n`
   );
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
