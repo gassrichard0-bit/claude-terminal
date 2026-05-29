@@ -843,6 +843,30 @@ try {
   }
 } catch(_) {}
 
+// Pre-fill xterm with conversation history so 'scroll up in Live view' shows
+// something on a fresh session. Claude's TUI redraws within the visible area
+// after this, leaving the history we wrote sitting up in scrollback.
+async function prefill_history_to_terminal() {
+  try {
+    const r = await fetch(backendUrlAbs('/api/messages?last=200'));
+    if (!r.ok) return;
+    const data = await r.json();
+    const msgs = (data && data.messages) || [];
+    if (msgs.length === 0) return;
+    let out = '\r\n\x1b[1;38;5;141m━━━ history (last ' + msgs.length + ' messages) ━━━\x1b[0m\r\n\r\n';
+    for (const m of msgs) {
+      const body = String(m.content || '').replace(/\n/g, '\r\n');
+      if (m.role === 'user') {
+        out += '\x1b[1;38;5;141m▌ ' + body + '\x1b[0m\r\n\r\n';
+      } else {
+        out += '\x1b[38;5;250m' + body + '\x1b[0m\r\n\r\n';
+      }
+    }
+    out += '\x1b[1;38;5;141m━━━ live ━━━\x1b[0m\r\n\r\n';
+    write_to_terminal(out);
+  } catch(_) {}
+}
+
 function load_scrollback() {
   try {
     const saved = localStorage.getItem(SCROLLBACK_KEY);
@@ -1014,6 +1038,10 @@ function connect(token) {
     }, 25000);
     // Send terminal size so the PTY renders correctly
     setTimeout(fit_and_resize, 50);
+    // Pre-fill scrollback with conversation history so 'scroll up in Live'
+    // actually shows something. Only on a fresh session (nothing replayed
+    // from localStorage), otherwise we'd compound on every reconnect.
+    if (streamBuffer.length === 0) prefill_history_to_terminal();
     cmdInput.focus();
   };
 
