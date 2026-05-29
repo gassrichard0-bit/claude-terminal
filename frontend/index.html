@@ -486,6 +486,30 @@
 
 <div id="error-bar"></div>
 
+<!-- Login modal (only shown when /api/auth/configured says enabled) -->
+<div id="login-modal" class="setup-modal" style="display: none;">
+  <div class="setup-card">
+    <h2 id="login-title">Sign in</h2>
+    <p class="setup-sub" id="login-sub">Enter your username and password. You'll get a 6-digit code on Telegram.</p>
+    <label>
+      <span>Username</span>
+      <input id="login-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+    </label>
+    <label>
+      <span>Password</span>
+      <input id="login-password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false">
+    </label>
+    <label id="login-code-row" style="display: none;">
+      <span>6-digit code <small>(sent to your Telegram)</small></span>
+      <input id="login-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autocapitalize="none" spellcheck="false">
+    </label>
+    <div id="login-error" class="setup-error"></div>
+    <div class="setup-actions">
+      <button id="login-submit" class="setup-primary">Continue</button>
+    </div>
+  </div>
+</div>
+
 <!-- First-time setup / settings modal: each user enters their own Mac URL -->
 <div id="setup-modal" class="setup-modal" style="display: none;">
   <div class="setup-card">
@@ -1005,11 +1029,42 @@ function backendWsUrl(path) {
   return base.replace(/^http/, 'ws') + path;
 }
 
-function boot() {
+async function boot() {
   load_scrollback();
   fit_and_resize();
   applyConfig();
-  // If user hasn't set up URL OR token, show the setup modal and wait
+
+  // Auto-derive backendUrl from this page's origin if the user didn't pin one
+  // (covers the "open Dan's tunnel URL on the phone" flow — no manual URL).
+  if (!userConfig || !userConfig.backendUrl) {
+    userConfig = Object.assign({ name: 'You' }, userConfig || {}, {
+      backendUrl: window.location.origin,
+    });
+    saveConfig(userConfig);
+    applyConfig();
+  }
+
+  // Probe whether this backend uses the account+2FA login flow
+  let authEnabled = false;
+  try {
+    const r = await fetch(backendUrlAbs('/api/auth/configured'));
+    if (r.ok) {
+      const d = await r.json();
+      authEnabled = !!d.enabled;
+    }
+  } catch (_) {}
+
+  if (authEnabled) {
+    if (userConfig && userConfig.token) {
+      // Try the stored token first; if 4001 rejects it, ws.onclose triggers login.
+      connect(userConfig.token);
+    } else {
+      openLogin();
+    }
+    return;
+  }
+
+  // Legacy mode: URL + token in setup modal
   if (!userConfig || !userConfig.backendUrl || !userConfig.token) {
     openSetup(true);
     return;
@@ -1025,6 +1080,109 @@ function backendFetch(path, opts) {
   });
   return fetch(backendUrlAbs(path), opts);
 }
+
+// --- Login + 2FA modal ---
+const loginModal = document.getElementById('login-modal');
+const loginUsername = document.getElementById('login-username');
+const loginPassword = document.getElementById('login-password');
+const loginCodeRow = document.getElementById('login-code-row');
+const loginCode = document.getElementById('login-code');
+const loginSubmit = document.getElementById('login-submit');
+const loginError = document.getElementById('login-error');
+const loginSub = document.getElementById('login-sub');
+let _challengeId = null;
+
+function showLoginError(text) {
+  loginError.textContent = text || '';
+  loginError.classList.toggle('show', !!text);
+}
+
+function openLogin() {
+  _challengeId = null;
+  loginCodeRow.style.display = 'none';
+  loginCode.value = '';
+  loginSubmit.textContent = 'Continue';
+  loginSub.textContent = 'Enter your username and password. You\'ll get a 6-digit code on Telegram.';
+  showLoginError('');
+  loginModal.style.display = 'flex';
+  loginModal.classList.add('show');
+  setTimeout(() => loginUsername.focus(), 50);
+}
+
+function closeLogin() {
+  loginModal.classList.remove('show');
+  loginModal.style.display = 'none';
+}
+
+async function submitLoginPassword() {
+  const username = loginUsername.value.trim();
+  const password = loginPassword.value;
+  if (!username || !password) { showLoginError('Username and password required.'); return; }
+  loginSubmit.disabled = true;
+  loginSubmit.textContent = 'Sending code…';
+  showLoginError('');
+  try {
+    const r = await fetch(backendUrlAbs('/api/auth/login'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (r.status === 401) { showLoginError('Invalid username or password.'); return; }
+    if (!r.ok) { showLoginError('Server error. Try again.'); return; }
+    const d = await r.json();
+    _challengeId = d.challenge_id;
+    loginCodeRow.style.display = '';
+    loginCode.value = '';
+    loginSub.textContent = 'Check Telegram for your 6-digit code.';
+    loginSubmit.textContent = 'Verify';
+    setTimeout(() => loginCode.focus(), 50);
+  } catch (e) {
+    showLoginError('Could not reach the server.');
+  } finally {
+    loginSubmit.disabled = false;
+  }
+}
+
+async function submitLoginCode() {
+  const code = loginCode.value.trim();
+  if (!/^\d{6}$/.test(code)) { showLoginError('Enter the 6-digit code.'); return; }
+  loginSubmit.disabled = true;
+  loginSubmit.textContent = 'Verifying…';
+  showLoginError('');
+  try {
+    const r = await fetch(backendUrlAbs('/api/auth/verify'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge_id: _challengeId, code }),
+    });
+    if (r.status === 429) { showLoginError('Too many tries — start over.'); _challengeId = null; loginCodeRow.style.display = 'none'; loginSubmit.textContent = 'Continue'; return; }
+    if (r.status === 400) { showLoginError('Code expired. Start over.'); _challengeId = null; loginCodeRow.style.display = 'none'; loginSubmit.textContent = 'Continue'; return; }
+    if (!r.ok) { showLoginError('Invalid code.'); return; }
+    const d = await r.json();
+    const cfg = Object.assign({}, userConfig || {}, {
+      name: d.username || (userConfig && userConfig.name) || 'You',
+      token: d.token,
+    });
+    saveConfig(cfg);
+    applyConfig();
+    closeLogin();
+    connect(d.token);
+  } catch (e) {
+    showLoginError('Could not reach the server.');
+  } finally {
+    loginSubmit.disabled = false;
+  }
+}
+
+loginSubmit.addEventListener('click', () => {
+  if (_challengeId) submitLoginCode();
+  else submitLoginPassword();
+});
+[loginUsername, loginPassword, loginCode].forEach(el => {
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); loginSubmit.click(); }
+  });
+});
 
 function connect(token) {
   lastToken = token;
@@ -1071,11 +1229,17 @@ function connect(token) {
     set_status('disconnected', 'Disconnected');
     connectingEl.classList.remove('show');
     if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
-    // 4001 = bad/missing token (server's close code). Show clear message + open settings.
+    // 4001 = bad/missing token (server's close code). If this backend uses
+    // the account+2FA flow, re-prompt login; otherwise fall back to setup.
     if (ev && ev.code === 4001) {
-      errorBar.textContent = 'Auth token rejected by ' + (userConfig ? userConfig.backendUrl : 'this server') + '. Open Settings ⚙ to fix.';
-      errorBar.style.display = 'block';
+      errorBar.style.display = 'none';
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      // Clear the stale token so boot() doesn't use it again
+      if (userConfig) { userConfig.token = ''; saveConfig(userConfig); }
+      fetch(backendUrlAbs('/api/auth/configured'))
+        .then(r => r.ok ? r.json() : { enabled: false })
+        .then(d => { if (d && d.enabled) openLogin(); else openSetup(false); })
+        .catch(() => openSetup(false));
       return;
     }
     if (!reconnectTimer) {

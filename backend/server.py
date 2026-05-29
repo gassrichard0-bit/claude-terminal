@@ -7,6 +7,7 @@ and streams I/O over WebSocket to the browser. No tmux polling. Real-time.
 import asyncio
 import json
 import os
+import time
 import pty
 import struct
 import fcntl
@@ -18,6 +19,12 @@ import uuid
 from typing import Optional, Union
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException
+from pydantic import BaseModel as _PydanticBaseModel
+from backend.auth import (
+    UserDB, Challenge, hash_password, verify_password,
+    new_challenge, send_telegram,
+    CHALLENGE_TTL_SECONDS, MAX_CHALLENGE_ATTEMPTS,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +64,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- User accounts + 2FA ---
+USER_DB = UserDB.load()
+_pending: dict[str, Challenge] = {}
+TELEGRAM_BOT_TOKEN = (
+    USER_DB.admin.telegram_bot_token
+    or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+)
+
+
+class LoginRequest(_PydanticBaseModel):
+    username: str
+    password: str
+
+
+class VerifyRequest(_PydanticBaseModel):
+    challenge_id: str
+    code: str
+
+
+def _gc_pending():
+    """Sweep expired challenges. Cheap enough to run on every login."""
+    now = time.time()
+    expired = [cid for cid, ch in _pending.items() if ch.expires_at < now]
+    for cid in expired:
+        _pending.pop(cid, None)
+
+
+def secrets_compare(a: str, b: str) -> bool:
+    import secrets as _s
+    return _s.compare_digest(a, b)
+
 
 def require_token(request: Request):
     """Check the request carries the auth token.
@@ -284,6 +323,76 @@ async def health():
     # Public — used by the PWA setup screen to verify a backend URL.
     # Intentionally returns minimal info, no session list.
     return {"status": "ok"}
+
+
+@app.get("/api/auth/configured")
+async def auth_configured():
+    """Public — frontend hits this to know whether to show the login screen
+    (users defined) or fall back to the simple URL+token setup."""
+    return {
+        "enabled": bool(USER_DB.users),
+        "admin_alerts": bool(USER_DB.admin.telegram_chat_id),
+    }
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest, request: Request):
+    """Step 1 of 2FA: validate username+password, send OTP via Telegram to
+    the user and (separately) to the admin as a login alert. Returns a
+    challenge_id which step 2 verifies."""
+    _gc_pending()
+    user = USER_DB.users.get(req.username)
+    # Use compare_digest-style verify even when user is missing so that
+    # response timing doesn't leak username existence.
+    dummy = "salt$" + "0" * 64
+    valid = user is not None and verify_password(req.password, user.password_hash)
+    if user is None:
+        verify_password(req.password, dummy)
+    if not valid:
+        log.warning(f"auth: failed login for username={req.username!r} from {request.client.host if request.client else '?'}")
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    cid, challenge = new_challenge(user.username)
+    _pending[cid] = challenge
+
+    src_ip = request.client.host if request.client else "?"
+    user_msg = (
+        f"Claude Terminal — your sign-in code is {challenge.code}\n"
+        f"It expires in 5 minutes. Don't share it."
+    )
+    admin_msg = (
+        f"Login attempt: {user.username}\n"
+        f"From: {src_ip}\n"
+        f"Code: {challenge.code}\n"
+        f"(this is an audit notification — do not share)"
+    )
+    if user.telegram_chat_id:
+        send_telegram(TELEGRAM_BOT_TOKEN, user.telegram_chat_id, user_msg)
+    if USER_DB.admin.telegram_chat_id:
+        send_telegram(TELEGRAM_BOT_TOKEN, USER_DB.admin.telegram_chat_id, admin_msg)
+    log.info(f"auth: challenge issued for {user.username} from {src_ip}")
+    return {"challenge_id": cid, "expires_in": CHALLENGE_TTL_SECONDS}
+
+
+@app.post("/api/auth/verify")
+async def auth_verify(req: VerifyRequest, request: Request):
+    """Step 2 of 2FA: validate the 6-digit code. On success, return the
+    backend AUTH_TOKEN so the PWA can connect."""
+    _gc_pending()
+    ch = _pending.get(req.challenge_id)
+    if ch is None:
+        raise HTTPException(status_code=400, detail="Challenge expired or not found")
+    if ch.attempts >= MAX_CHALLENGE_ATTEMPTS:
+        _pending.pop(req.challenge_id, None)
+        raise HTTPException(status_code=429, detail="Too many attempts; restart login")
+    ch.attempts += 1
+    if not secrets_compare(req.code.strip(), ch.code):
+        log.warning(f"auth: bad code attempt {ch.attempts}/{MAX_CHALLENGE_ATTEMPTS} for {ch.username}")
+        raise HTTPException(status_code=401, detail="Invalid code")
+    # Success — consume the challenge and hand back the backend token
+    _pending.pop(req.challenge_id, None)
+    log.info(f"auth: {ch.username} verified")
+    return {"token": AUTH_TOKEN, "username": ch.username}
 
 @app.get("/api/config")
 async def get_config(_: str = Depends(require_token)):
