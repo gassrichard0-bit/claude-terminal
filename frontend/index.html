@@ -698,86 +698,31 @@ harden_xterm_input();
 requestAnimationFrame(harden_xterm_input);
 
 // --- Touch handling ---
-//   1-finger drag      → scroll terminal (custom; xterm's .xterm-viewport
-//                        native scroll is unreliable in iOS PWA standalone)
-//   tap                → focus xterm so iOS keyboard pops up for direct typing
-//   long-press (350ms) → hand control to iOS for native text selection
-//                        (blue handles + Copy popover)
-//
-// Smoothness strategy: accumulate pixel deltas in pendingScrollPx, flush
-// at most once per requestAnimationFrame (~16.6ms). xterm only supports
-// whole-line scrollLines() calls; we keep the sub-line remainder so we
-// don't drop precision over a long drag. Momentum decays in pixel space
-// for the same reason.
+// DOM renderer = .xterm-viewport is a real scrollable element. iOS native
+// scroll on it (momentum + sub-pixel + GPU compositor) is way better than
+// any JS scroll-line emulation. We only intercept touches for:
+//   tap        → focus xterm so the iOS keyboard pops up for direct typing
+//   long-press → hand control to iOS for native text selection
 let touchActive = false;
 let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
-let touchLastY = 0;
 let touchMoved = false;
 let longPressTimer = null;
 let nativeSelectMode = false;
-let pendingScrollPx = 0;
-let scrollRAF = null;
-let velocityPxPerMs = 0;
-let lastMoveTime = 0;
-let momentumRAF = null;
 const LONG_PRESS_MS = 350;
 
-function approx_line_height_px() {
-  // xterm font 13px × lineHeight 1.2 in our config
-  return 13 * 1.2;
-}
-
-function flush_scroll() {
-  scrollRAF = null;
-  const lh = approx_line_height_px();
-  const lines = Math.trunc(pendingScrollPx / lh);
-  if (lines !== 0) {
-    term.scrollLines(lines);
-    pendingScrollPx -= lines * lh;
-  }
-}
-
-function schedule_scroll() {
-  if (scrollRAF) return;
-  scrollRAF = requestAnimationFrame(flush_scroll);
-}
-
-function stop_momentum() {
-  if (momentumRAF) { cancelAnimationFrame(momentumRAF); momentumRAF = null; }
-}
-
-function start_momentum() {
-  if (Math.abs(velocityPxPerMs) < 0.05) return;
-  const step = () => {
-    velocityPxPerMs *= 0.94;
-    if (Math.abs(velocityPxPerMs) < 0.05) { momentumRAF = null; return; }
-    pendingScrollPx += velocityPxPerMs * 16.6;
-    flush_scroll();
-    momentumRAF = requestAnimationFrame(step);
-  };
-  momentumRAF = requestAnimationFrame(step);
-}
-
 termContainer.addEventListener('touchstart', (e) => {
-  stop_momentum();
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   if (nativeSelectMode && !window.getSelection().toString()) {
     termContainer.classList.remove('select-mode');
     nativeSelectMode = false;
   }
-
   if (e.touches.length !== 1) { touchActive = false; touchMoved = true; return; }
   const t = e.touches[0];
   touchActive = true;
   touchStartX = t.clientX;
   touchStartY = t.clientY;
-  touchLastY = t.clientY;
   touchStartTime = Date.now();
-  lastMoveTime = touchStartTime;
   touchMoved = false;
-  velocityPxPerMs = 0;
-  pendingScrollPx = 0;
-
   longPressTimer = setTimeout(() => {
     if (!touchActive || touchMoved) return;
     nativeSelectMode = true;
@@ -787,21 +732,14 @@ termContainer.addEventListener('touchstart', (e) => {
 }, { passive: true });
 
 termContainer.addEventListener('touchmove', (e) => {
-  if (nativeSelectMode) return;
+  // Just track movement so we can cancel long-press / tap-to-focus.
+  // Native scroll on .xterm-viewport does the actual scrolling.
   if (!touchActive || e.touches.length !== 1) return;
   const t = e.touches[0];
   if (Math.abs(t.clientX - touchStartX) > 6 || Math.abs(t.clientY - touchStartY) > 6) {
     touchMoved = true;
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   }
-  const now = Date.now();
-  const dy = touchLastY - t.clientY;     // positive = finger moved up = scroll down
-  const dt = Math.max(1, now - lastMoveTime);
-  velocityPxPerMs = dy / dt;             // for momentum on release
-  pendingScrollPx += dy;
-  touchLastY = t.clientY;
-  lastMoveTime = now;
-  schedule_scroll();
 }, { passive: true });
 
 termContainer.addEventListener('touchend', () => {
@@ -809,23 +747,16 @@ termContainer.addEventListener('touchend', () => {
   if (nativeSelectMode) return;
   if (!touchActive) return;
   touchActive = false;
-  const elapsed = Date.now() - touchStartTime;
-
-  if (!touchMoved && elapsed < LONG_PRESS_MS) {
+  if (!touchMoved && Date.now() - touchStartTime < LONG_PRESS_MS) {
     if (!(window.getSelection && window.getSelection().toString().length > 0)) {
       focus_terminal();
     }
-    return;
   }
-  // Decayed velocity → no momentum after a slow / paused drag
-  if (Date.now() - lastMoveTime > 80) velocityPxPerMs = 0;
-  start_momentum();
 }, { passive: true });
 
 termContainer.addEventListener('touchcancel', () => {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   touchActive = false;
-  stop_momentum();
 }, { passive: true });
 
 // Desktop wheel scroll
