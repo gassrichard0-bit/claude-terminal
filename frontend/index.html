@@ -1104,11 +1104,14 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Live terminal echo as a highlighted line — purple bg, dark text.
-  // Bold + padded so it stands out as 'this came from me' even when Claude's
-  // TUI redraws around it.
+  // Live terminal echo — same ▌ purple style as the pre-fill history.
+  // Padded with enough trailing newlines that the echo line gets pushed
+  // ABOVE the visible viewport before Claude's TUI redraws. Claude only
+  // paints the visible area; scrollback above survives. Result: every
+  // user message persists in scrollback as a purple ▌ line.
+  const rows = term.rows || 24;
   write_to_terminal(
-    `\r\n\x1b[2K\r\x1b[48;5;141;38;5;232;1m ${text} \x1b[0m\r\n`
+    `\r\n\x1b[2K\r\x1b[1;38;5;141m▌ ${text}\x1b[0m\r\n` + '\r\n'.repeat(rows)
   );
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
