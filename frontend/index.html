@@ -1076,7 +1076,12 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // No Live-terminal echo — Claude's TUI handles its own input display.
+  // Live terminal echo as a highlighted line — purple bg, dark text.
+  // Bold + padded so it stands out as 'this came from me' even when Claude's
+  // TUI redraws around it.
+  write_to_terminal(
+    `\r\n\x1b[2K\r\x1b[48;5;141;38;5;232;1m ${text} \x1b[0m\r\n`
+  );
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
   if (currentView === 'chat') {
