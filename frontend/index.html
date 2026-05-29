@@ -1073,10 +1073,7 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // Live terminal echo — purple text, no badge. (Badge removed per request.)
-  write_to_terminal(
-    `\r\n\x1b[2K\r\x1b[1;38;5;141m${text}\x1b[0m\r\n`
-  );
+  // No Live-terminal echo — Claude's TUI handles its own input display.
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
   if (currentView === 'chat') {
