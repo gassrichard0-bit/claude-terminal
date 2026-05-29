@@ -31,12 +31,30 @@ import asyncio
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
+
+# macOS's DNS cache on some networks only returns IPv6 for api.telegram.org,
+# and stock IPv4-only Wi-Fi can't reach the v6 endpoint → urllib hangs/errors.
+# Force the v4 address for known Telegram API hosts.
+_TG_V4 = {
+    "api.telegram.org": "149.154.167.220",
+}
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _patched_getaddrinfo(host, port, *args, **kwargs):
+    if host in _TG_V4:
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (_TG_V4[host], port))]
+    return _orig_getaddrinfo(host, port, *args, **kwargs)
+
+
+socket.getaddrinfo = _patched_getaddrinfo
 
 # Reuse the auth module so we read the same users file the server does
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -142,41 +160,69 @@ class Bridge:
     async def connect_ws(self):
         url = f"ws://{BACKEND_HOST}/ws/{SESSION_ID}?token={BACKEND_TOKEN}"
         print(f"bridge: connecting to {url}", flush=True)
-        self.ws = await websockets.connect(url, ping_interval=25, ping_timeout=10)
+        # Aggressive keepalive so half-dead TCP gets detected fast.
+        self.ws = await websockets.connect(
+            url, ping_interval=15, ping_timeout=8, close_timeout=3,
+        )
         print("bridge: ws connected", flush=True)
 
+    async def ensure_ws(self):
+        """If the WS is missing or closed, (re)connect. Caller awaits."""
+        try:
+            if self.ws is not None and not self.ws.closed:
+                return
+        except AttributeError:
+            pass
+        for attempt in range(1, 6):
+            try:
+                await self.connect_ws()
+                return
+            except Exception as e:
+                print(f"bridge: ws reconnect attempt {attempt} failed: {e}", file=sys.stderr)
+                await asyncio.sleep(min(2 ** attempt, 15))
+
     async def send_input(self, text: str):
-        """Send a user message into the PTY as keystrokes + Enter."""
-        if self.ws is None:
-            return
-        # Mirror how the PWA sends: type text, then Enter as a separate event.
-        await self.ws.send(json.dumps({"type": "input", "data": text}))
-        await self.ws.send(json.dumps({"type": "enter"}))
+        """Send a user message into the PTY as keystrokes + Enter. Auto-reconnect on failure."""
+        for attempt in range(2):
+            await self.ensure_ws()
+            if self.ws is None:
+                return
+            try:
+                await self.ws.send(json.dumps({"type": "input", "data": text}))
+                await self.ws.send(json.dumps({"type": "enter"}))
+                return
+            except Exception as e:
+                print(f"bridge: send_input retry ({attempt}): {e}", file=sys.stderr)
+                self.ws = None
+                continue
 
     async def ws_reader_loop(self):
-        """Read PTY output from the WS and route it to whichever chats are waiting."""
-        try:
-            async for raw in self.ws:
-                try:
-                    msg = json.loads(raw)
-                except Exception:
-                    continue
-                if msg.get("type") != "output":
-                    continue
-                data = strip_ansi(msg.get("data", ""))
-                if not data:
-                    continue
-                # Broadcast the chunk to every chat that has an open turn.
-                # In practice only one chat will be active at a time per send.
-                for st in self.states.values():
-                    if st.message_id is None and not st.buffer:
-                        # No active turn for this chat — skip (don't spam them
-                        # with system output triggered by other chats).
+        """Read PTY output and route it to active chats. Reconnects on WS death."""
+        while True:
+            await self.ensure_ws()
+            if self.ws is None:
+                await asyncio.sleep(2)
+                continue
+            try:
+                async for raw in self.ws:
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
                         continue
-                    st.buffer += data
-                    await self._maybe_edit(st)
-        except Exception as e:
-            print(f"bridge: ws reader exited: {e}", file=sys.stderr)
+                    if msg.get("type") != "output":
+                        continue
+                    data = strip_ansi(msg.get("data", ""))
+                    if not data:
+                        continue
+                    for st in self.states.values():
+                        if st.message_id is None and not st.buffer:
+                            continue
+                        st.buffer += data
+                        await self._maybe_edit(st)
+            except Exception as e:
+                print(f"bridge: ws reader closed ({e}); reconnecting", file=sys.stderr)
+                self.ws = None
+                await asyncio.sleep(1)
 
     async def _maybe_edit(self, st: ChatState):
         """Throttled progressive edit of the active reply message."""
