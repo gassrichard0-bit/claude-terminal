@@ -126,7 +126,10 @@ class PTYSession:
         self.sid = sid
         self.fd: Optional[int] = None
         self.pid: Optional[int] = None
-        self.websocket: Optional[WebSocket] = None
+        # Fan-out: PTY output goes to every attached websocket; input from
+        # any attached websocket goes to the same PTY. Lets the PWA and the
+        # Telegram bridge share one Claude session.
+        self.websockets: list[WebSocket] = []
         self._reader_task: Optional[asyncio.Task] = None
         self._buffer = bytearray()
 
@@ -276,22 +279,36 @@ class PTYSession:
                 pass
 
     async def _send_terminal_output(self, data: bytes):
-        """Send terminal output to connected WebSocket."""
-        if self.websocket is None:
+        """Fan PTY output to every attached websocket. Dead sockets are
+        pruned from the list on send failure."""
+        if not self.websockets:
             return
-        try:
-            await self.websocket.send_json({
-                "type": "output",
-                "data": data.decode("utf-8", errors="replace")
-            })
-        except Exception:
-            pass
+        text = data.decode("utf-8", errors="replace")
+        dead = []
+        for ws in list(self.websockets):
+            try:
+                await ws.send_json({"type": "output", "data": text})
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                self.websockets.remove(ws)
+            except ValueError:
+                pass
 
     def attach_websocket(self, ws: WebSocket):
-        self.websocket = ws
+        if ws not in self.websockets:
+            self.websockets.append(ws)
 
-    def detach_websocket(self):
-        self.websocket = None
+    def detach_websocket(self, ws: Optional[WebSocket] = None):
+        """Remove one specific ws, or clear all if not given."""
+        if ws is None:
+            self.websockets.clear()
+        else:
+            try:
+                self.websockets.remove(ws)
+            except ValueError:
+                pass
 
     def cleanup(self):
         """Kill the child process and close the PTY."""
@@ -593,8 +610,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         log.error(f"WS error for {session_id}: {e}")
     finally:
         if session_id in sessions:
-            sessions[session_id].detach_websocket()
-            # Keep PTY alive — user can reconnect
+            # Only remove THIS websocket — others (PWA, bridge) keep streaming
+            sessions[session_id].detach_websocket(websocket)
+            # Keep PTY alive — users can reconnect
 
 
 # --- Frontend ---
