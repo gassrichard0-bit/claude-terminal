@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import Optional, Union
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,17 +33,46 @@ AUTH_TOKEN = os.environ.get("CLAUDE_TERMINAL_TOKEN", str(uuid.uuid4()))
 WORK_DIR = Path(os.environ.get("WORK_DIR", str(Path.home() / "app")))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
+# CORS origins — comma-separated list via env, defaults to '*' for backwards
+# compatibility but production setups should pin to specific origins.
+_cors_origins_env = os.environ.get("CLAUDE_TERMINAL_CORS_ORIGINS", "*")
+CORS_ORIGINS = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+
+# Print the token at startup so the user can paste it into the PWA setup
+# screen out-of-band. Anyone with the ngrok URL must ALSO have this token
+# to connect — that's the only protection against random scanners finding
+# the public tunnel.
+print("=" * 60, flush=True)
+print("  Claude Terminal — Auth Token", flush=True)
+print(f"  {AUTH_TOKEN}", flush=True)
+print("  Paste this into the PWA Setup screen alongside your URL.", flush=True)
+print("=" * 60, flush=True)
+
 app = FastAPI(title="Claude Terminal")
 
-# CORS: the frontend can be served from a different origin than the backend
-# (BYOM model — one shared web app, each user points it at their own Mac).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def require_token(request: Request):
+    """Check the request carries the auth token.
+
+    Accepts either a `?token=` query param or an `Authorization: Bearer <t>`
+    header. Returns the token on success, raises HTTPException(401) on
+    mismatch. Use as `Depends(require_token)` on any endpoint that exposes
+    PTY control or conversation data."""
+    token = request.query_params.get("token", "")
+    if not token:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing token")
+    return token
 
 # Active PTY sessions
 sessions: dict[str, dict] = {}
@@ -252,12 +281,15 @@ class PTYSession:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "sessions": list(sessions.keys())}
+    # Public — used by the PWA setup screen to verify a backend URL.
+    # Intentionally returns minimal info, no session list.
+    return {"status": "ok"}
 
 @app.get("/api/config")
-async def get_config():
+async def get_config(_: str = Depends(require_token)):
+    # Token gated: caller already proved they have the token, so this
+    # returns layout details only (no secrets).
     return {
-        "token": AUTH_TOKEN,
         "ws_url": "/ws/{session_id}",
         "default_session": "claude-main"
     }
@@ -315,7 +347,7 @@ def _parse_jsonl(path: Path):
         return
 
 @app.get("/api/messages")
-async def get_messages(since: int = 0, limit: int = 0, last: int = 0):
+async def get_messages(since: int = 0, limit: int = 0, last: int = 0, _: str = Depends(require_token)):
     """Return chat messages merged across all Claude project sessions.
 
     Reads every *.jsonl under ~/.claude/projects/*/ and stitches them into
@@ -378,7 +410,7 @@ async def get_messages(since: int = 0, limit: int = 0, last: int = 0):
     }
 
 @app.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(_: str = Depends(require_token)):
     return {"sessions": [
         {"id": sid, "alive": s.pid is not None}
         for sid, s in sessions.items()
@@ -475,10 +507,16 @@ async def serve_frontend():
         )
     return {"message": "Frontend not built yet"}
 
-# Serve any other static files from frontend/
+# Serve any other static files from frontend/. Path-traversal-safe:
+# resolved path must remain under FRONTEND_DIR.
 @app.get("/files/{path:path}")
 async def serve_static(path: str):
-    file_path = FRONTEND_DIR / path
+    root = FRONTEND_DIR.resolve()
+    try:
+        file_path = (root / path).resolve()
+        file_path.relative_to(root)
+    except (ValueError, OSError):
+        return HTMLResponse("Forbidden", status_code=403)
     if file_path.exists() and file_path.is_file():
         return FileResponse(str(file_path))
     return HTMLResponse("Not found", status_code=404)

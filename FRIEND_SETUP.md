@@ -51,11 +51,20 @@ cd ~/claude-terminal
 bash start.sh
 ```
 
-You should see `✅ Claude Terminal running on http://localhost:8080`. Verify with:
+You should see `✅ Claude Terminal running on http://localhost:8080` followed by an **auth token** like `93233276-d689-49d8-98f7-cefc8e952512`. Copy that token — the friend will paste it into the PWA setup screen in step 4.
+
+Verify with:
 
 ```bash
 curl -s http://localhost:8080/api/health
-# expect: {"status":"ok","sessions":[]}
+# expect: {"status":"ok"}
+```
+
+The token is regenerated on every server restart. To pin a stable token, set the `CLAUDE_TERMINAL_TOKEN` env var before running `start.sh`:
+
+```bash
+export CLAUDE_TERMINAL_TOKEN="$(uuidgen)"
+bash start.sh
 ```
 
 If the health check fails, tail the log:
@@ -77,10 +86,14 @@ Copy the printed `https://<random>.ngrok-free.dev` URL. This is the friend's **p
 ## Step 4 — Install the PWA on the friend's phone
 
 1. Open the ngrok URL in Safari (iOS) or Chrome (Android) on the friend's phone.
-2. The setup screen asks for a "Backend URL" — paste the same ngrok URL there.
+2. The setup screen asks for two things:
+   - **Your Mac's URL** — the ngrok URL from step 3
+   - **Auth token** — the token printed in step 2
 3. Tap **Connect**. The terminal should load Claude's TUI.
 4. iOS: Share → **Add to Home Screen**. Android: ⋮ → Install app.
 5. From now on the icon opens fullscreen with no browser chrome.
+
+If the token gets rejected, double-check it was copied exactly (no whitespace). The token IS the only thing standing between a random ngrok scanner and shell access on this Mac — don't share it, don't put it in screenshots, don't paste it in chat.
 
 ## Step 5 — Keep it running
 
@@ -105,8 +118,10 @@ kill $(lsof -ti:8080)        # stop the backend
 ## Reference
 
 - Upstream repo: https://github.com/gassrichard0-bit/claude-terminal
-- Health endpoint: `GET /api/health`
-- Conversation history endpoint: `GET /api/messages?last=200` (reads `~/.claude/projects/*/*.jsonl`)
-- WebSocket: `WS /ws/claude-main?token=<auth-token>` — token is auto-generated and exposed via `/api/config`
+- Health endpoint: `GET /api/health` (public)
+- Conversation history endpoint: `GET /api/messages?last=200` (token-gated, reads `~/.claude/projects/*/*.jsonl`)
+- WebSocket: `WS /ws/claude-main?token=<auth-token>`
+- Auth: Bearer token on `Authorization` header, or `?token=...` query param. Token is printed by `start.sh` and can be pinned via `CLAUDE_TERMINAL_TOKEN` env var.
+- Optional hardening: `CLAUDE_TERMINAL_CORS_ORIGINS=https://your-phone-pwa-host` to pin CORS instead of the `*` default.
 
 If anything in this guide is ambiguous, ask the friend before guessing.

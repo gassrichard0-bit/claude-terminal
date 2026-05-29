@@ -499,13 +499,10 @@
       <span>Your Mac's URL <small>(ngrok or local)</small></span>
       <input id="setup-url" type="url" placeholder="https://your-id.ngrok-free.dev" autocomplete="off" autocapitalize="none" spellcheck="false">
     </label>
-    <details class="setup-advanced">
-      <summary>Advanced</summary>
-      <label>
-        <span>Auth token <small>(leave blank to auto-fetch)</small></span>
-        <input id="setup-token" type="text" placeholder="optional" autocomplete="off" autocapitalize="none" spellcheck="false">
-      </label>
-    </details>
+    <label>
+      <span>Auth token <small>(printed when you run start.sh)</small></span>
+      <input id="setup-token" type="text" placeholder="paste the token from your Mac" autocomplete="off" autocapitalize="none" spellcheck="false">
+    </label>
     <p class="setup-help">
       Don't have a Mac URL yet? On your Mac run:<br>
       <code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/gassrichard0-bit/claude-terminal/main/install.sh | bash</code>
@@ -857,7 +854,7 @@ try {
 // after this, leaving the history we wrote sitting up in scrollback.
 async function prefill_history_to_terminal() {
   try {
-    const r = await fetch(backendUrlAbs('/api/messages?last=200'));
+    const r = await backendFetch('/api/messages?last=200');
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
@@ -1012,16 +1009,21 @@ function boot() {
   load_scrollback();
   fit_and_resize();
   applyConfig();
-  // If user hasn't set up yet, show the setup modal and wait
-  if (!userConfig || !userConfig.backendUrl) {
+  // If user hasn't set up URL OR token, show the setup modal and wait
+  if (!userConfig || !userConfig.backendUrl || !userConfig.token) {
     openSetup(true);
     return;
   }
-  fetch(backendUrlAbs('/api/config')).then(r => r.json()).then(cfg => {
-    connect((userConfig && userConfig.token) || cfg.token);
-  }).catch(() => {
-    connect((userConfig && userConfig.token) || 'claude123');
+  connect(userConfig.token);
+}
+
+// All authenticated fetches go through here — adds Authorization: Bearer
+function backendFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, {
+    'Authorization': 'Bearer ' + ((userConfig && userConfig.token) || '')
   });
+  return fetch(backendUrlAbs(path), opts);
 }
 
 function connect(token) {
@@ -1261,7 +1263,7 @@ async function loadHistory() {
     const queryPath = isInitial
       ? '/api/messages?last=' + INITIAL_LOAD
       : '/api/messages?since=' + loadedToIndex;
-    const r = await fetch(backendUrlAbs(queryPath));
+    const r = await backendFetch(queryPath);
     if (!r.ok) return;
     const data = await r.json();
     const msgs = (data && data.messages) || [];
@@ -1310,7 +1312,7 @@ async function loadOlder() {
   try {
     const want = Math.min(OLDER_CHUNK, loadedFromIndex);
     const from = loadedFromIndex - want;
-    const r = await fetch(backendUrlAbs(`/api/messages?since=${from}&limit=${want}`));
+    const r = await backendFetch(`/api/messages?since=${from}&limit=${want}`);
     if (!r.ok) return;
     const data = await r.json();
     const older = (data && data.messages) || [];
@@ -1436,31 +1438,45 @@ function clearSetupMessage() {
 
 setupSave.addEventListener('click', async () => {
   let url = setupUrl.value.trim();
+  const token = setupToken.value.trim();
   if (!url) { setupUrl.focus(); showSetupMessage("Your Mac's URL is required.", 'err'); return; }
+  if (!token) { setupToken.focus(); showSetupMessage("Auth token is required. Copy it from your Mac's start.sh output.", 'err'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
   url = url.replace(/\/+$/, '');
 
-  // Validate the URL by hitting /api/health
+  // Validate URL + token together by hitting /api/config (token-gated).
   setupSave.disabled = true;
   setupSave.textContent = 'Testing…';
   clearSetupMessage();
-  let ok = false;
+  let healthOk = false;
+  let tokenOk = false;
   try {
-    const r = await fetch(url + '/api/health', { method: 'GET' });
-    if (r.ok) {
-      const j = await r.json();
-      if (j && j.status === 'ok') ok = true;
+    const h = await fetch(url + '/api/health', { method: 'GET' });
+    if (h.ok) {
+      const j = await h.json();
+      if (j && j.status === 'ok') healthOk = true;
+    }
+    if (healthOk) {
+      const c = await fetch(url + '/api/config', {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      tokenOk = c.ok;
     }
   } catch (e) {
-    showSetupMessage("Couldn't reach that URL. Check the address, that the server is running on it, and (if it's https) that the cert is valid.", 'err');
+    showSetupMessage("Couldn't reach that URL. Check the address, that the server is running, and (if https) that the cert is valid.", 'err');
   }
   setupSave.disabled = false;
   setupSave.textContent = 'Connect';
 
-  if (!ok) {
+  if (!healthOk) {
     if (!setupError.classList.contains('show')) {
       showSetupMessage("Server didn't respond ok. Is Claude Terminal running on this URL?", 'err');
     }
+    return;
+  }
+  if (!tokenOk) {
+    showSetupMessage("Token rejected. Copy the exact token printed by start.sh.", 'err');
     return;
   }
 
@@ -1469,7 +1485,7 @@ setupSave.addEventListener('click', async () => {
   const cfg = {
     name: setupName.value.trim() || 'You',
     backendUrl: url,
-    token: setupToken.value.trim() || '',
+    token: token,
   };
   saveConfig(cfg);
 
