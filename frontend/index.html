@@ -607,7 +607,7 @@ try {
     cursorBlink: true,
     cursorStyle: 'bar',
     disableStdin: false,            // allow direct typing into the terminal (raw char-by-char to PTY)
-    scrollback: 50000,
+    scrollback: 5000,
     fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
     fontSize: 13,
     lineHeight: 1.2,
@@ -688,7 +688,7 @@ try {
     cursorBlink: true,
     cursorStyle: 'bar',
     disableStdin: false,
-    scrollback: 50000,
+    scrollback: 5000,
     fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
     fontSize: 13,
     lineHeight: 1.2,
@@ -978,8 +978,12 @@ const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
 const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
 // Bump this string any time the byte stream format / processing changes, so
 // every device wipes its locally cached scrollback once on next load.
-const SCROLLBACK_VERSION = '2026-05-29-bright-blue-user';
-const MAX_SCROLLBACK = 2_000_000; // ~2 MB of raw bytes (incl. ANSI codes)
+// Bump the version to force every device to drop its cached scrollback —
+// the prior 2 MB blob replayed via a single term.write() locked mobile
+// Safari for 50–200 ms (sometimes long enough that iOS treated it as an
+// unresponsive page).
+const SCROLLBACK_VERSION = '2026-05-30-perf-trim';
+const MAX_SCROLLBACK = 256_000; // ~256 KB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
 
 // One-time wipe when SCROLLBACK_VERSION changes — clears stale dirty saves
@@ -1039,10 +1043,22 @@ async function prefill_history_to_terminal() {
 function load_scrollback() {
   try {
     const saved = localStorage.getItem(SCROLLBACK_KEY);
-    if (saved) {
-      streamBuffer = saved;
-      if (xtermAvailable) term.write(saved);
-    }
+    if (!saved) return;
+    streamBuffer = saved;
+    if (!xtermAvailable) return;
+    // Chunked replay: write 32 KB per task, yielding to the event loop
+    // between chunks. A single term.write() on a fat blob was the main
+    // cause of mobile-Safari "page unresponsive" freezes on cold start.
+    const CHUNK = 32 * 1024;
+    let i = 0;
+    const writeNext = () => {
+      if (i >= saved.length) return;
+      const slice = saved.slice(i, i + CHUNK);
+      i += CHUNK;
+      term.write(slice);
+      if (i < saved.length) setTimeout(writeNext, 0);
+    };
+    writeNext();
   } catch(e) {}
 }
 
