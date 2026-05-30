@@ -6,6 +6,11 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
+# Load .env (CLAUDE_TERMINAL_TOKEN pinned here so PWA token survives restarts)
+if [ -f ".env" ]; then
+  set -a; . ./.env; set +a
+fi
+
 # Install Python deps if needed (idempotent)
 if [ -f "backend/requirements.txt" ]; then
   python3 -m pip install --user --quiet -r backend/requirements.txt 2>/dev/null || true
