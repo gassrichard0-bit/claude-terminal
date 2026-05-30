@@ -51,6 +51,7 @@ class User:
     username: str
     password_hash: str
     telegram_chat_id: Optional[str] = None
+    server_url: str = ""
 
 
 @dataclass
@@ -75,6 +76,7 @@ class UserDB:
                     username=name,
                     password_hash=u.get("password_hash", ""),
                     telegram_chat_id=u.get("telegram_chat_id"),
+                    server_url=u.get("server_url", ""),
                 )
                 for name, u in users_data.items()
             },

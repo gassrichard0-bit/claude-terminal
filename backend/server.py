@@ -366,6 +366,16 @@ async def auth_login(req: LoginRequest, request: Request):
         log.warning(f"auth: failed login for username={req.username!r} from {request.client.host if request.client else '?'}")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
+    # Skip Telegram 2FA if user has no telegram_chat_id — return token directly
+    if not user.telegram_chat_id:
+        log.info(f"auth: password-only login for {user.username} from {request.client.host if request.client else '?'}")
+        return {
+            "token": AUTH_TOKEN,
+            "username": user.username,
+            "server_url": user.server_url or "",
+            "skip_2fa": True,
+        }
+
     cid, challenge = new_challenge(user.username)
     _pending[cid] = challenge
 

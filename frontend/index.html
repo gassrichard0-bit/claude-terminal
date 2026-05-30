@@ -557,13 +557,33 @@
   <div id="chat-messages"></div>
 </div>
 
+<div id="input-bar" class="inputbar" style="display: none;">
+  <span class="prompt-symbol">❯</span>
+  <input id="chat-input" type="text" placeholder="Send a message to Claude..." autocomplete="off" autocapitalize="off" spellcheck="false">
+  <button id="chat-send">Send</button>
+</div>
+
 <script>
 let ws = null;
 let sessionId = 'claude-main';
-// Input bar removed — typing goes directly into xterm's helper textarea via
-// term.onData(). The cmdInput stub stays as a no-op so the rest of the code
-// (focus / value setter / readers) doesn't blow up.
-let cmdInput = { value: '', focus: () => {}, addEventListener: () => {} };
+// Input bar restored — chat input sends to PTY via WebSocket.
+let cmdInput = document.getElementById('chat-input');
+
+// Wire up Send button and Enter key
+document.addEventListener('DOMContentLoaded', () => {
+  const sendBtn = document.getElementById('chat-send');
+  if (sendBtn) {
+    sendBtn.addEventListener('click', send_command);
+  }
+  if (cmdInput) {
+    cmdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send_command();
+      }
+    });
+  }
+});
 let statusEl = document.getElementById('status-indicator');
 let connectingEl = document.getElementById('connecting');
 let errorBar = document.getElementById('error-bar');
@@ -1015,18 +1035,23 @@ async function boot() {
   applyConfig();
 
   // Auto-connect: backendUrl from page origin, token hardcoded in server.
-  // No setup modal — single-user single-Mac, just works.
-  userConfig = Object.assign({ name: 'You' }, userConfig || {}, {
-    backendUrl: window.location.origin,
+  // Preserve custom backendUrl from multi-user login (e.g., dan.access-term.com)
+  const defaults = {
     token: 'claude-terminal',
-  });
+  };
+  if (!userConfig || !userConfig.backendUrl) {
+    defaults.backendUrl = window.location.origin;
+  }
+  userConfig = Object.assign({ name: 'You' }, userConfig || {}, defaults);
   saveConfig(userConfig);
   applyConfig();
 
   // Probe whether this backend uses the account+2FA login flow
+  // Always hit the origin (this server) — not a saved backendUrl, because
+  // Dan may have an old localStorage config pointing to a dead tunnel/IP.
   let authEnabled = false;
   try {
-    const r = await fetch(backendUrlAbs('/api/auth/configured'));
+    const r = await fetch(location.origin + '/api/auth/configured');
     if (r.ok) {
       const d = await r.json();
       authEnabled = !!d.enabled;
@@ -1088,10 +1113,12 @@ async function submitLoginPassword() {
   const password = loginPassword.value;
   if (!username || !password) { showLoginError('Username and password required.'); return; }
   loginSubmit.disabled = true;
-  loginSubmit.textContent = 'Sending code…';
+  loginSubmit.textContent = 'Signing in…';
   showLoginError('');
   try {
-    const r = await fetch(backendUrlAbs('/api/auth/login'), {
+    // Login always hits the origin server (where the users file lives),
+    // not the saved backendUrl (which may point to Dan's Mac).
+    const r = await fetch(location.origin + '/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -1099,6 +1126,24 @@ async function submitLoginPassword() {
     if (r.status === 401) { showLoginError('Invalid username or password.'); return; }
     if (!r.ok) { showLoginError('Server error. Try again.'); return; }
     const d = await r.json();
+    // Direct login (no 2FA) — backend returned token immediately
+    if (d.token) {
+      const cfg = Object.assign({}, userConfig || {}, {
+        name: d.username || username,
+        token: d.token,
+        serverUrl: d.server_url || '',
+      });
+      // If user has a different server, set it as backendUrl so WebSocket connects there
+      if (d.server_url) {
+        cfg.backendUrl = d.server_url.replace(/\/+$/, '');
+      }
+      saveConfig(cfg);
+      applyConfig();
+      closeLogin();
+      connect(d.token);
+      return;
+    }
+    // 2FA flow — show code input
     _challengeId = d.challenge_id;
     loginCodeRow.style.display = '';
     loginCode.value = '';
@@ -1492,6 +1537,8 @@ function setView(name) {
   document.getElementById('view-chat').classList.toggle('active', name === 'chat');
   termContainer.style.display = (name === 'live') ? '' : 'none';
   chatView.style.display = (name === 'chat') ? 'flex' : 'none';
+  const inputBar = document.getElementById('input-bar');
+  if (inputBar) inputBar.style.display = (name === 'chat') ? '' : 'none';
   // Re-evaluate each scroll-indicator so the hidden view's thumb hides
   // and the visible one repositions for the now-visible container.
   for (const upd of scrollIndicatorUpdates) upd();
