@@ -983,15 +983,14 @@ async function boot() {
   fit_and_resize();
   applyConfig();
 
-  // Auto-derive backendUrl from this page's origin if the user didn't pin one
-  // (covers the "open Dan's tunnel URL on the phone" flow — no manual URL).
-  if (!userConfig || !userConfig.backendUrl) {
-    userConfig = Object.assign({ name: 'You' }, userConfig || {}, {
-      backendUrl: window.location.origin,
-    });
-    saveConfig(userConfig);
-    applyConfig();
-  }
+  // Auto-connect: backendUrl from page origin, token hardcoded in server.
+  // No setup modal — single-user single-Mac, just works.
+  userConfig = Object.assign({ name: 'You' }, userConfig || {}, {
+    backendUrl: window.location.origin,
+    token: 'claude-terminal',
+  });
+  saveConfig(userConfig);
+  applyConfig();
 
   // Probe whether this backend uses the account+2FA login flow
   let authEnabled = false;
@@ -1004,21 +1003,11 @@ async function boot() {
   } catch (_) {}
 
   if (authEnabled) {
-    if (userConfig && userConfig.token) {
-      // Try the stored token first; if 4001 rejects it, ws.onclose triggers login.
-      connect(userConfig.token);
-    } else {
-      openLogin();
-    }
+    openLogin();
     return;
   }
 
-  // Legacy mode: URL + token in setup modal
-  if (!userConfig || !userConfig.backendUrl || !userConfig.token) {
-    openSetup(true);
-    return;
-  }
-  connect(userConfig.token);
+  connect('claude-terminal');
 }
 
 // All authenticated fetches go through here — adds Authorization: Bearer

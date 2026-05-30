@@ -36,7 +36,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-terminal")
 
 # --- Config ---
-AUTH_TOKEN = os.environ.get("CLAUDE_TERMINAL_TOKEN", str(uuid.uuid4()))
+AUTH_TOKEN = "claude-terminal"  # hardcoded — single-user single-Mac setup
 WORK_DIR = Path(os.environ.get("WORK_DIR", str(Path.home() / "app")))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -45,14 +45,11 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 _cors_origins_env = os.environ.get("CLAUDE_TERMINAL_CORS_ORIGINS", "*")
 CORS_ORIGINS = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 
-# Print the token at startup so the user can paste it into the PWA setup
-# screen out-of-band. Anyone with the ngrok URL must ALSO have this token
-# to connect — that's the only protection against random scanners finding
-# the public tunnel.
+# Print the token at startup — now hardcoded so the PWA auto-connects
 print("=" * 60, flush=True)
 print("  Claude Terminal — Auth Token", flush=True)
 print(f"  {AUTH_TOKEN}", flush=True)
-print("  Paste this into the PWA Setup screen alongside your URL.", flush=True)
+print("  (hardcoded — PWA auto-connects, no setup needed)", flush=True)
 print("=" * 60, flush=True)
 
 app = FastAPI(title="Claude Terminal")
