@@ -564,46 +564,62 @@ let lastToken = null;
 let keepaliveTimer = null;
 
 // --- xterm.js terminal ---
-const term = new Terminal({
-  cursorBlink: true,
-  cursorStyle: 'bar',
-  disableStdin: false,            // allow direct typing into the terminal (raw char-by-char to PTY)
-  scrollback: 50000,
-  fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
-  fontSize: 13,
-  lineHeight: 1.2,
-  allowProposedApi: true,
-  // Canonical Tokyo Night Storm palette — Claude Code's dark theme uses
-  // ANSI 16 colors, so its UI picks these up. Result: Claude's TUI looks
-  // native against the rest of the app.
-  theme: {
-    background: '#1a1b26',
-    foreground: '#c0caf5',
-    cursor: '#bb9af7',
-    cursorAccent: '#1a1b26',
-    selectionBackground: '#33467c',
-    black:         '#15161e',
-    red:           '#f7768e',
-    green:         '#9ece6a',
-    yellow:        '#e0af68',
-    blue:          '#7aa2f7',
-    magenta:       '#bb9af7',
-    cyan:          '#7dcfff',
-    white:         '#a9b1d6',
-    brightBlack:   '#414868',
-    brightRed:     '#f7768e',
-    brightGreen:   '#9ece6a',
-    brightYellow:  '#e0af68',
-    brightBlue:    '#7aa2f7',
-    brightMagenta: '#bb9af7',
-    brightCyan:    '#7dcfff',
-    brightWhite:   '#c0caf5',
-  }
-});
-const termContainer = document.getElementById('terminal');
-term.open(termContainer);
+// Wrap in try/catch — xterm fails on some iOS devices (blank page).
+// If xterm can't init, fall back gracefully to chat-only mode.
+let term = null;
+let termContainer = null;
+let xtermAvailable = false;
+try {
+  term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    disableStdin: false,            // allow direct typing into the terminal (raw char-by-char to PTY)
+    scrollback: 50000,
+    fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    allowProposedApi: true,
+    // Canonical Tokyo Night Storm palette — Claude Code's dark theme uses
+    // ANSI 16 colors, so its UI picks these up. Result: Claude's TUI looks
+    // native against the rest of the app.
+    theme: {
+      background: '#1a1b26',
+      foreground: '#c0caf5',
+      cursor: '#bb9af7',
+      cursorAccent: '#1a1b26',
+      selectionBackground: '#33467c',
+      black:         '#15161e',
+      red:           '#f7768e',
+      green:         '#9ece6a',
+      yellow:        '#e0af68',
+      blue:          '#7aa2f7',
+      magenta:       '#bb9af7',
+      cyan:          '#7dcfff',
+      white:         '#a9b1d6',
+      brightBlack:   '#414868',
+      brightRed:     '#f7768e',
+      brightGreen:   '#9ece6a',
+      brightYellow:  '#e0af68',
+      brightBlue:    '#7aa2f7',
+      brightMagenta: '#bb9af7',
+      brightCyan:    '#7dcfff',
+      brightWhite:   '#c0caf5',
+    }
+  });
+  termContainer = document.getElementById('terminal');
+  term.open(termContainer);
+  xtermAvailable = true;
+} catch (e) {
+  console.warn('xterm.js init failed — falling back to chat-only mode:', e);
+  // Hide terminal container, show chat view
+  const t = document.getElementById('terminal');
+  if (t) t.style.display = 'none';
+  document.getElementById('view-live').style.display = 'none';
+  xtermAvailable = false;
+}
 // No FitAddon: roll a tiny resize-to-container ourselves based on cell metrics.
 function basic_fit() {
+  if (!xtermAvailable) return;
   try {
     const r = termContainer.getBoundingClientRect();
     // xterm.js renderer reports actualCellWidth/Height via private API; fall back to font-size estimate.
@@ -664,27 +680,28 @@ function attach_scroll_indicator(container) {
 }
 
 // xterm-viewport is created by term.open(). Find it and attach.
-// Capture the updaters so setView can re-check visibility on view switch
-// (otherwise the hidden view's thumb stays painted at its last position).
+// Only attach scroll indicators if xterm is available.
 const scrollIndicatorUpdates = [];
-const xterm_vp = termContainer.querySelector('.xterm-viewport');
-if (xterm_vp) scrollIndicatorUpdates.push(attach_scroll_indicator(xterm_vp));
+if (xtermAvailable) {
+  const xterm_vp = termContainer.querySelector('.xterm-viewport');
+  if (xterm_vp) scrollIndicatorUpdates.push(attach_scroll_indicator(xterm_vp));
+}
 scrollIndicatorUpdates.push(attach_scroll_indicator(document.getElementById('chat-view')));
 
-// Forward direct keystrokes to the PTY. NO local echo — Claude's TUI does
-// full-screen redraws based on cursor position, and locally-echoed chars
-// shift the cursor in a way that fights with those redraws (garbled output).
-// Accepting the small round-trip delay is worth the clean display.
-term.onData((data) => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'input', data }));
-  }
-});
+// Forward direct keystrokes to the PTY (only in xterm Live mode).
+if (xtermAvailable) {
+  term.onData((data) => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+}
 
 // Disable iOS autocorrect/autocomplete/autocapitalize on xterm's hidden
 // helper textarea — autocorrect is the worst thing that can happen to a
 // terminal: it inserts/changes characters as you type.
 function harden_xterm_input() {
+  if (!xtermAvailable) return;
   const helper = termContainer.querySelector('.xterm-helper-textarea');
   if (!helper) return;
   helper.setAttribute('autocomplete', 'off');
@@ -775,6 +792,7 @@ termContainer.addEventListener('click', (e) => {
 // Focus xterm's hidden helper textarea so the OS keyboard pops up and
 // term.onData fires for every keystroke.
 function focus_terminal() {
+  if (!xtermAvailable) return;
   // Re-harden autocorrect/autocomplete each time (xterm sometimes resets attrs)
   harden_xterm_input();
   try { term.focus(); } catch (_) {}
@@ -833,7 +851,7 @@ function load_scrollback() {
     const saved = localStorage.getItem(SCROLLBACK_KEY);
     if (saved) {
       streamBuffer = saved;
-      term.write(saved);
+      if (xtermAvailable) term.write(saved);
     }
   } catch(e) {}
 }
@@ -880,7 +898,7 @@ function flushWrites() {
   const data = writeBuffer;
   writeBuffer = '';
   const stripped = data.replace(ALT_SCREEN_RE, '');
-  term.write(stripped);
+  if (xtermAvailable) term.write(stripped);
   streamBuffer += stripped;
   schedule_save();
 }
@@ -1245,7 +1263,7 @@ function send_command() {
 
 function clear_scrollback() {
   streamBuffer = '';
-  term.clear();
+  if (xtermAvailable) term.clear();
   try { localStorage.removeItem(SCROLLBACK_KEY); } catch(e) {}
 }
 
@@ -1286,7 +1304,7 @@ cmdInput.addEventListener('focus', () => {
 const chatView = document.getElementById('chat-view');
 const chatMessages = document.getElementById('chat-messages');
 const chatEmpty = document.getElementById('chat-empty');
-let currentView = 'live';
+let currentView = 'chat';
 let lastRenderedCount = 0;
 let historyRefreshTimer = null;
 
@@ -1484,7 +1502,7 @@ document.getElementById('restart-btn').addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: 'restart' }));
     flash_status('⟳ Restarting...');
-    setTimeout(() => { term.reset(); }, 100);
+    if (xtermAvailable) setTimeout(() => { term.reset(); }, 100);
   }
 });
 
