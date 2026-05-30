@@ -1134,8 +1134,11 @@ async function submitLoginPassword() {
         serverUrl: d.server_url || '',
       });
       // If user has a different server, set it as backendUrl so WebSocket connects there
+      // If user stays local, DELETE the old backendUrl so it falls back to location.origin
       if (d.server_url) {
         cfg.backendUrl = d.server_url.replace(/\/+$/, '');
+      } else {
+        delete cfg.backendUrl;
       }
       saveConfig(cfg);
       applyConfig();
