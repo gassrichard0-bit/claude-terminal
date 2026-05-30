@@ -16,6 +16,7 @@
 <!-- xterm.js — base only, no addons -->
 <link rel="stylesheet" href="/xterm/xterm.min.css">
 <script src="/xterm/xterm.min.js"></script>
+<script src="/xterm/xterm-addon-fit.min.js"></script>
 
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -569,6 +570,7 @@ let keepaliveTimer = null;
 let term = null;
 let termContainer = null;
 let xtermAvailable = false;
+let fitAddon = null;
 try {
   term = new Terminal({
     cursorBlink: true,
@@ -608,6 +610,13 @@ try {
   });
   termContainer = document.getElementById('terminal');
   term.open(termContainer);
+  // FitAddon measures actual rendered cell metrics from the DOM and sizes
+  // rows/cols correctly — without it scroll & layout break on iOS.
+  try {
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    fitAddon.fit();
+  } catch (e) { console.warn('FitAddon failed:', e); }
   xtermAvailable = true;
 } catch (e) {
   console.warn('xterm.js init failed — falling back to chat-only mode:', e);
@@ -617,13 +626,14 @@ try {
   document.getElementById('view-live').style.display = 'none';
   xtermAvailable = false;
 }
-// No FitAddon: roll a tiny resize-to-container ourselves based on cell metrics.
+// Prefer FitAddon (measures real cell metrics from rendered DOM).
+// Falls back to an approximation if FitAddon failed to load.
 function basic_fit() {
   if (!xtermAvailable) return;
   try {
+    if (fitAddon) { fitAddon.fit(); return; }
     const r = termContainer.getBoundingClientRect();
-    // xterm.js renderer reports actualCellWidth/Height via private API; fall back to font-size estimate.
-    const cellW = 8;     // approx for 13px mono on phone
+    const cellW = 8;
     const cellH = 13 * 1.2;
     const cols = Math.max(40, Math.floor(r.width / cellW));
     const rows = Math.max(10, Math.floor(r.height / cellH));
@@ -775,13 +785,6 @@ termContainer.addEventListener('touchcancel', () => {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   touchActive = false;
 }, { passive: true });
-
-// Desktop wheel scroll
-termContainer.addEventListener('wheel', (e) => {
-  pendingScrollPx += e.deltaY;
-  schedule_scroll();
-  e.preventDefault();
-}, { passive: false });
 
 // Desktop click — focus terminal so keys go straight to PTY
 termContainer.addEventListener('click', (e) => {
@@ -1217,7 +1220,7 @@ function send_command() {
   const text = cmdInput.value;
   if (text === '' || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  // No inline echo — Claude's TUI shows the sent message in his rendering.
+  // No inline echo — Claude's TUI shows the sent message in its own rendering.
   // Past messages still appear purple via the pre-fill on connect.
 
   // Optimistic chat-view bubble — appears instantly, no polling delay
@@ -1293,7 +1296,7 @@ cmdInput.addEventListener('focus', () => {
 const chatView = document.getElementById('chat-view');
 const chatMessages = document.getElementById('chat-messages');
 const chatEmpty = document.getElementById('chat-empty');
-let currentView = 'chat';
+let currentView = 'live';
 let lastRenderedCount = 0;
 let historyRefreshTimer = null;
 

@@ -111,7 +111,7 @@ def require_token(request: Request):
     return token
 
 # Active PTY sessions
-sessions: dict[str, dict] = {}
+sessions: dict[str, "PTYSession"] = {}
 
 # Cache for /api/messages — {mtime, messages}
 _messages_cache = None

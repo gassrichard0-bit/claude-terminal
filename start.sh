@@ -36,20 +36,10 @@ sleep 2
 if curl -sf http://localhost:8080/api/health > /dev/null 2>&1; then
   echo "✅ Claude Terminal running on http://localhost:8080"
   echo
-
-  # Pull the auth token out of the log so the user can paste it into the PWA
-  TOKEN=$(grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' /tmp/claude-terminal.log | head -1)
-  if [ -n "$TOKEN" ]; then
-    echo "🔑 Auth token (paste this into the PWA setup screen):"
-    echo "   $TOKEN"
-    echo
-  fi
-
   echo "Next steps:"
   echo "  1. In another terminal:  ngrok http 8080"
   echo "  2. Open the printed https://*.ngrok-free.dev URL on your phone"
-  echo "  3. In the setup screen, paste BOTH the ngrok URL and the token above"
-  echo "  4. Share → Add to Home Screen"
+  echo "  3. Share → Add to Home Screen (the PWA auto-connects)"
   echo
   echo "Tail logs:   tail -f /tmp/claude-terminal.log"
   echo "Stop:        kill \$(lsof -ti:8080)"

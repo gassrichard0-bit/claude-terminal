@@ -18,7 +18,7 @@ Config (env vars or backend/server.py defaults):
 Chat UX:
     - User sends a message on Telegram → bridge writes it to the PTY as input
     - Bridge captures PTY output, strips ANSI codes, edits a single 'thinking'
-      message progressively as content streams in (≈ once per 2s).
+      message progressively as content streams in (throttled to EDIT_THROTTLE_SECONDS).
     - When output goes quiet for IDLE_SETTLE_SECONDS, that message is finalized
       and the next user input starts a fresh reply message.
     - Long replies are split across multiple Telegram messages (Telegram caps
