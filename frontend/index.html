@@ -555,16 +555,13 @@
   <div id="chat-messages"></div>
 </div>
 
-<div class="inputbar">
-  <span class="prompt-symbol">›</span>
-  <input type="text" id="cmd-input" placeholder="Message Claude or run a command..." autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="send">
-  <button id="send-btn">Send</button>
-</div>
-
 <script>
 let ws = null;
 let sessionId = 'claude-main';
-let cmdInput = document.getElementById('cmd-input');
+// Input bar removed — typing goes directly into xterm's helper textarea via
+// term.onData(). The cmdInput stub stays as a no-op so the rest of the code
+// (focus / value setter / readers) doesn't blow up.
+let cmdInput = { value: '', focus: () => {}, addEventListener: () => {} };
 let statusEl = document.getElementById('status-indicator');
 let connectingEl = document.getElementById('connecting');
 let errorBar = document.getElementById('error-bar');
@@ -1267,14 +1264,7 @@ function clear_scrollback() {
   try { localStorage.removeItem(SCROLLBACK_KEY); } catch(e) {}
 }
 
-cmdInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    send_command();
-  }
-});
-
-document.getElementById('send-btn').addEventListener('click', send_command);
+// Input bar removed — no keydown/send-btn wiring needed.
 
 function set_status(s, text) {
   statusEl.textContent = text;
