@@ -193,7 +193,8 @@
   .chat-msg.assistant .chat-role { color: #bb9af7; }
 
   /* xterm terminal container */
-  #terminal {
+  #terminal,
+  #agent-terminal {
     flex: 1;
     width: 100%;
     min-height: 0;
@@ -483,6 +484,7 @@
   <div class="view-toggle">
     <button id="view-live" class="view-btn active">Live</button>
     <button id="view-chat" class="view-btn">Chat</button>
+    <button id="view-agent" class="view-btn">Terminal</button>
   </div>
   <button class="topbar-gear" id="settings-btn" title="Settings">⚙</button>
 </div>
@@ -550,6 +552,8 @@
 </div>
 
 <div id="terminal"></div>
+
+<div id="agent-terminal" style="display: none;"></div>
 
 <div id="chat-view" class="chat-view" style="display: none;">
   <button id="load-older" class="load-older" style="display: none;">Load older messages</button>
@@ -669,6 +673,137 @@ function basic_fit() {
 }
 basic_fit();
 
+// --- Agent terminal (Hermes) ---
+// Second, fully independent xterm instance. Hidden until the user opens the
+// Agent view. Its own WebSocket at /ws/agent; its own PTY on the backend.
+let agentTerm = null;
+let agentTermContainer = null;
+let agentFitAddon = null;
+let agentXtermAvailable = false;
+let agentWs = null;
+let agentReconnectTimer = null;
+let agentConnectedOnce = false;
+try {
+  agentTerm = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'bar',
+    disableStdin: false,
+    scrollback: 50000,
+    fontFamily: '"SF Mono","Menlo","Monaco","Courier New",monospace',
+    fontSize: 13,
+    lineHeight: 1.2,
+    allowProposedApi: true,
+    theme: {
+      background: '#1a1b26', foreground: '#c0caf5',
+      cursor: '#bb9af7', cursorAccent: '#1a1b26',
+      selectionBackground: '#33467c',
+      black: '#15161e', red: '#f7768e', green: '#9ece6a', yellow: '#e0af68',
+      blue: '#7aa2f7', magenta: '#bb9af7', cyan: '#7dcfff', white: '#a9b1d6',
+      brightBlack: '#414868', brightRed: '#f7768e', brightGreen: '#9ece6a',
+      brightYellow: '#e0af68', brightBlue: '#7aa2f7', brightMagenta: '#bb9af7',
+      brightCyan: '#7dcfff', brightWhite: '#c0caf5',
+    }
+  });
+  agentTermContainer = document.getElementById('agent-terminal');
+  agentTerm.open(agentTermContainer);
+  try {
+    agentFitAddon = new FitAddon.FitAddon();
+    agentTerm.loadAddon(agentFitAddon);
+  } catch (e) { console.warn('Agent FitAddon failed:', e); }
+  agentXtermAvailable = true;
+  agentTerm.onData((data) => {
+    if (agentWs && agentWs.readyState === WebSocket.OPEN) {
+      agentWs.send(JSON.stringify({ type: 'input', data }));
+    }
+  });
+} catch (e) {
+  console.warn('Agent xterm init failed:', e);
+  const at = document.getElementById('agent-terminal');
+  if (at) at.style.display = 'none';
+  const ab = document.getElementById('view-agent');
+  if (ab) ab.style.display = 'none';
+}
+
+function agent_fit() {
+  if (!agentXtermAvailable) return;
+  try {
+    if (agentFitAddon) { agentFitAddon.fit(); return; }
+    const r = agentTermContainer.getBoundingClientRect();
+    const cols = Math.max(40, Math.floor(r.width / 8));
+    const rows = Math.max(10, Math.floor(r.height / (13 * 1.2)));
+    agentTerm.resize(cols, rows);
+  } catch (e) {}
+}
+
+function agent_send_resize() {
+  if (!agentXtermAvailable || !agentWs || agentWs.readyState !== WebSocket.OPEN) return;
+  try {
+    agentWs.send(JSON.stringify({ type: 'resize', cols: agentTerm.cols, rows: agentTerm.rows }));
+  } catch (e) {}
+}
+
+function connectAgent(token) {
+  if (!agentXtermAvailable) return;
+  if (agentWs && (agentWs.readyState === WebSocket.OPEN || agentWs.readyState === WebSocket.CONNECTING)) return;
+  const url = backendWsUrl(`/ws/agent?token=${encodeURIComponent(token)}`);
+  agentWs = new WebSocket(url);
+  agentWs.onopen = () => {
+    if (agentReconnectTimer) { clearTimeout(agentReconnectTimer); agentReconnectTimer = null; }
+    agentConnectedOnce = true;
+    setTimeout(() => { agent_fit(); agent_send_resize(); }, 50);
+  };
+  agentWs.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type === 'output') agentTerm.write(msg.data);
+    } catch (e) { agentTerm.write(event.data); }
+  };
+  agentWs.onclose = (ev) => {
+    if (ev && ev.code === 4001) return;  // bad token — main flow handles it
+    // Only auto-reconnect while user is on the agent view, to save resources.
+    if (currentView === 'agent' && !agentReconnectTimer) {
+      agentReconnectTimer = setTimeout(() => { agentReconnectTimer = null; connectAgent(token); }, 3000);
+    }
+  };
+  agentWs.onerror = () => { /* onclose will handle reconnect */ };
+}
+
+function disconnectAgent() {
+  if (agentReconnectTimer) { clearTimeout(agentReconnectTimer); agentReconnectTimer = null; }
+  if (agentWs) {
+    try { agentWs.close(); } catch (e) {}
+    agentWs = null;
+  }
+}
+
+// Focus the agent terminal so keystrokes (desktop) and the on-screen
+// keyboard (iOS) actually wire through. xterm's helper textarea is the
+// real focus target — explicitly focusing it pops the iOS keyboard.
+function focus_agent_terminal() {
+  if (!agentXtermAvailable) return;
+  try { agentTerm.focus(); } catch (_) {}
+  const helper = agentTermContainer.querySelector('.xterm-helper-textarea');
+  if (helper) {
+    helper.setAttribute('autocomplete', 'off');
+    helper.setAttribute('autocorrect', 'off');
+    helper.setAttribute('autocapitalize', 'none');
+    helper.setAttribute('spellcheck', 'false');
+    try { helper.focus(); } catch (_) {}
+  }
+}
+if (agentXtermAvailable) {
+  // Desktop click / mobile tap → focus the helper textarea
+  agentTermContainer.addEventListener('click', () => {
+    if (window.getSelection && window.getSelection().toString().length > 0) return;
+    focus_agent_terminal();
+  });
+  agentTermContainer.addEventListener('touchend', (e) => {
+    // Don't steal selection; just focus on simple taps
+    if (window.getSelection && window.getSelection().toString().length > 0) return;
+    focus_agent_terminal();
+  }, { passive: true });
+}
+
 // Custom overlay scrollbar — iOS PWA ignores ::-webkit-scrollbar.
 // Renders a thin purple thumb on the right edge of any scrollable container.
 // RAF-throttled: scroll + MutationObserver can fire hundreds of times per
@@ -722,6 +857,10 @@ const scrollIndicatorUpdates = [];
 if (xtermAvailable) {
   const xterm_vp = termContainer.querySelector('.xterm-viewport');
   if (xterm_vp) scrollIndicatorUpdates.push(attach_scroll_indicator(xterm_vp));
+}
+if (agentXtermAvailable) {
+  const agent_vp = agentTermContainer.querySelector('.xterm-viewport');
+  if (agent_vp) scrollIndicatorUpdates.push(attach_scroll_indicator(agent_vp));
 }
 scrollIndicatorUpdates.push(attach_scroll_indicator(document.getElementById('chat-view')));
 
@@ -974,6 +1113,7 @@ function send_resize() {
 function fit_and_resize() {
   basic_fit();
   send_resize();
+  if (currentView === 'agent') { agent_fit(); agent_send_resize(); }
 }
 
 window.addEventListener('resize', fit_and_resize);
@@ -1538,8 +1678,11 @@ function setView(name) {
   currentView = name;
   document.getElementById('view-live').classList.toggle('active', name === 'live');
   document.getElementById('view-chat').classList.toggle('active', name === 'chat');
+  const agentBtn = document.getElementById('view-agent');
+  if (agentBtn) agentBtn.classList.toggle('active', name === 'agent');
   termContainer.style.display = (name === 'live') ? '' : 'none';
   chatView.style.display = (name === 'chat') ? 'flex' : 'none';
+  if (agentTermContainer) agentTermContainer.style.display = (name === 'agent') ? '' : 'none';
   const inputBar = document.getElementById('input-bar');
   if (inputBar) inputBar.style.display = (name === 'chat') ? '' : 'none';
   // Re-evaluate each scroll-indicator so the hidden view's thumb hides
@@ -1554,11 +1697,19 @@ function setView(name) {
     }
   } else {
     if (historyRefreshTimer) { clearInterval(historyRefreshTimer); historyRefreshTimer = null; }
+  }
+  if (name === 'agent') {
+    // Lazy-connect the bash PTY the first time the user opens the tab.
+    if (lastToken) connectAgent(lastToken);
+    setTimeout(() => { agent_fit(); agent_send_resize(); focus_agent_terminal(); }, 50);
+  } else if (name === 'live') {
     setTimeout(fit_and_resize, 50);
   }
 }
 document.getElementById('view-live').addEventListener('click', () => setView('live'));
 document.getElementById('view-chat').addEventListener('click', () => setView('chat'));
+const _agentBtn = document.getElementById('view-agent');
+if (_agentBtn) _agentBtn.addEventListener('click', () => setView('agent'));
 
 // Restart button - sends restart WebSocket message
 document.getElementById('restart-btn').addEventListener('click', () => {

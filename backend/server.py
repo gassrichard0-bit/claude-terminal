@@ -130,9 +130,18 @@ class PTYSession:
         self._reader_task: Optional[asyncio.Task] = None
         self._buffer = bytearray()
 
-    def spawn(self):
-        """Fork a PTY. Auto-resumes the most recent Claude session via `claude --continue`,
-        falls back to a fresh `claude` if no prior session exists, and drops to bash if claude exits."""
+    def spawn(self, startup: Optional[str] = None, raw_mode: bool = True):
+        """Fork a PTY. Default startup auto-resumes the most recent Claude
+        session via `claude --continue` and falls back to a fresh `claude`,
+        dropping to bash if claude exits. Callers can pass a custom `startup`
+        shell string (e.g. for an agent bash) to run a different CLI.
+
+        raw_mode controls PTY discipline:
+        - True (Claude): ECHO/ICANON/ISIG/IEXTEN off, OPOST off — full TUI
+          owns its own rendering, raw byte passthrough.
+        - False (agent bash): leave cooked defaults so bash echoes typed
+          chars, line-edits via readline, and `\\n` is translated to `\\r\\n`
+          for the prompt. Without this, an interactive shell looks broken."""
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(str(WORK_DIR))
@@ -141,24 +150,24 @@ class PTYSession:
             os.environ["COLORTERM"] = "truecolor"
             os.environ["FORCE_COLOR"] = "1"
             os.environ["CLICOLOR_FORCE"] = "1"
-            startup = "claude --continue 2>/dev/null || claude; exec bash --login"
-            os.execvp("bash", ["bash", "--login", "-c", startup])
+            cmd = startup or "claude --continue 2>/dev/null || claude; exec bash --login"
+            os.execvp("bash", ["bash", "--login", "-c", cmd])
             os._exit(1)
-        
+
         self.pid = pid
         self.fd = fd
-        
-        # Set raw mode on PTY
-        attrs = termios.tcgetattr(fd)
-        attrs[3] = attrs[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
-        attrs[1] = attrs[1] & ~termios.OPOST
-        termios.tcsetattr(fd, termios.TCSAFLUSH, attrs)
-        
+
+        if raw_mode:
+            attrs = termios.tcgetattr(fd)
+            attrs[3] = attrs[3] & ~(termios.ECHO | termios.ICANON | termios.ISIG | termios.IEXTEN)
+            attrs[1] = attrs[1] & ~termios.OPOST
+            termios.tcsetattr(fd, termios.TCSAFLUSH, attrs)
+
         # Set to non-blocking
         fl = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-        
-        log.info(f"PTY spawned: pid={pid}, fd={fd}")
+
+        log.info(f"PTY spawned: pid={pid}, fd={fd}, raw={raw_mode}")
 
     def resize(self, cols: int, rows: int):
         """Set terminal window size."""
@@ -551,6 +560,83 @@ async def list_sessions(_: str = Depends(require_token)):
 
 
 # --- WebSocket ---
+
+# Agent (raw shell) endpoint — declared BEFORE /ws/{session_id} so it wins
+# the route match. Starlette dispatches in registration order; if /ws/agent
+# were declared after the parametric route it would never be hit.
+# Plain bash login shell; the user runs whatever agent they want inside it
+# (hermes, claude, codex…). Independent PTY from the Claude session.
+AGENT_STARTUP = "exec bash --login"
+
+
+@app.websocket("/ws/agent")
+async def agent_websocket(websocket: WebSocket):
+    """Live agent PTY session — a plain bash shell."""
+    await websocket.accept()
+    token = websocket.query_params.get("token", "")
+    if token != AUTH_TOKEN:
+        log.warning(f"WS agent rejected: bad token from {websocket.client.host if websocket.client else '?'}")
+        await websocket.close(code=4001, reason="Invalid token")
+        return
+    log.info("WS connected: agent session")
+
+    session_id = "agent-main"
+    session = sessions.get(session_id)
+    fresh = False
+    if session is None or session.pid is None:
+        log.info("Creating new agent PTY session (bash)")
+        session = PTYSession(session_id)
+        session.spawn(startup=AGENT_STARTUP, raw_mode=False)
+        sessions[session_id] = session
+        await session.start_reader()
+        fresh = True
+
+    session.attach_websocket(websocket)
+    session.resize(80, 24)
+    # Nudge bash to repaint its prompt on every (re)connect — without this a
+    # reconnecting client lands on a blank screen until they hit Enter, since
+    # bash's PS1 is only emitted in response to input.
+    if not fresh:
+        try:
+            session.write("\r")
+        except Exception:
+            pass
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+            except json.JSONDecodeError:
+                session.write(data)
+                continue
+
+            msg_type = msg.get("type", "")
+            if msg_type == "input":
+                session.write(msg.get("data", ""))
+            elif msg_type == "enter":
+                session.write("\r")
+            elif msg_type == "resize":
+                session.resize(msg.get("cols", 80), msg.get("rows", 24))
+            elif msg_type == "control":
+                session.write_control(msg.get("char", ""))
+            elif msg_type == "restart":
+                log.info("Restarting agent session")
+                session.cleanup()
+                new_session = PTYSession(session_id)
+                new_session.spawn(startup=AGENT_STARTUP, raw_mode=False)
+                new_session.attach_websocket(websocket)
+                sessions[session_id] = new_session
+                await new_session.start_reader()
+
+    except WebSocketDisconnect:
+        log.info("WS disconnected: agent session")
+    except Exception as e:
+        log.error(f"WS agent error: {e}")
+    finally:
+        if session_id in sessions:
+            sessions[session_id].detach_websocket(websocket)
+
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
