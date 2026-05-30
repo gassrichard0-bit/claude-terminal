@@ -819,7 +819,7 @@ const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
 const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
 // Bump this string any time the byte stream format / processing changes, so
 // every device wipes its locally cached scrollback once on next load.
-const SCROLLBACK_VERSION = '2026-05-29-colored-history';
+const SCROLLBACK_VERSION = '2026-05-29-bright-blue-user';
 const MAX_SCROLLBACK = 2_000_000; // ~2 MB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
 
@@ -848,12 +848,12 @@ async function prefill_history_to_terminal() {
     //   141 = purple    (claude)
     //   244 = dim grey  (separators / role labels)
     //   223 = soft peach (claude body)
-    //   189 = pale blue (you body)
+    //   75  = bright blue (you body — Tokyo Night accent)
     const CYAN = '\x1b[38;5;117m';
     const PURPLE = '\x1b[38;5;141m';
     const DIM = '\x1b[38;5;244m';
     const PEACH = '\x1b[38;5;223m';
-    const PALE = '\x1b[38;5;189m';
+    const PALE = '\x1b[1;38;5;75m';
     const BOLD = '\x1b[1m';
     const RESET = '\x1b[0m';
     const SEP = DIM + '─'.repeat(48) + RESET;
