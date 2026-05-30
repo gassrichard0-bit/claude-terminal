@@ -113,6 +113,9 @@
   /* Chat-bubble view */
   .chat-view {
     flex: 1;
+    /* min-height: 0 — without this, flex items default to min-height:auto,
+       which expands to content height and breaks overflow:auto on iOS. */
+    min-height: 0;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 18px 14px 24px;
