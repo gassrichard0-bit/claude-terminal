@@ -819,7 +819,7 @@ const SCROLLBACK_KEY = 'claude-terminal-stream-' + sessionId;
 const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
 // Bump this string any time the byte stream format / processing changes, so
 // every device wipes its locally cached scrollback once on next load.
-const SCROLLBACK_VERSION = '2026-05-29-no-addons';
+const SCROLLBACK_VERSION = '2026-05-29-colored-history';
 const MAX_SCROLLBACK = 2_000_000; // ~2 MB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
 
@@ -842,16 +842,37 @@ async function prefill_history_to_terminal() {
     const data = await r.json();
     const msgs = (data && data.messages) || [];
     if (msgs.length === 0) return;
-    let out = '\r\n\x1b[1;38;5;141m━━━ history (last ' + msgs.length + ' messages) ━━━\x1b[0m\r\n\r\n';
+
+    // Tokyo-Night-ish palette (256-color):
+    //   117 = bright cyan (you)
+    //   141 = purple    (claude)
+    //   244 = dim grey  (separators / role labels)
+    //   223 = soft peach (claude body)
+    //   189 = pale blue (you body)
+    const CYAN = '\x1b[38;5;117m';
+    const PURPLE = '\x1b[38;5;141m';
+    const DIM = '\x1b[38;5;244m';
+    const PEACH = '\x1b[38;5;223m';
+    const PALE = '\x1b[38;5;189m';
+    const BOLD = '\x1b[1m';
+    const RESET = '\x1b[0m';
+    const SEP = DIM + '─'.repeat(48) + RESET;
+
+    let out = '\r\n' + BOLD + PURPLE + '━━━ history (last ' + msgs.length + ' messages) ━━━' + RESET + '\r\n\r\n';
+    let prevRole = null;
     for (const m of msgs) {
       const body = String(m.content || '').replace(/\n/g, '\r\n');
+      if (prevRole && prevRole !== m.role) out += SEP + '\r\n\r\n';
       if (m.role === 'user') {
-        out += '\x1b[1;38;5;141m▌ ' + body + '\x1b[0m\r\n\r\n';
+        out += BOLD + CYAN + '▌ YOU' + RESET + '\r\n';
+        out += PALE + body + RESET + '\r\n\r\n';
       } else {
-        out += '\x1b[38;5;250m' + body + '\x1b[0m\r\n\r\n';
+        out += BOLD + PURPLE + '▌ CLAUDE' + RESET + '\r\n';
+        out += PEACH + body + RESET + '\r\n\r\n';
       }
+      prevRole = m.role;
     }
-    out += '\x1b[1;38;5;141m━━━ live ━━━\x1b[0m\r\n\r\n';
+    out += BOLD + PURPLE + '━━━ live ━━━' + RESET + '\r\n\r\n';
     write_to_terminal(out);
   } catch(_) {}
 }
