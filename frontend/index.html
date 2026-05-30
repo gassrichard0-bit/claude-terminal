@@ -207,6 +207,11 @@
     -webkit-overflow-scrolling: touch;
     overflow-y: auto !important;
     touch-action: pan-y;
+    /* CRITICAL: stock xterm 5.x leaves both viewport and screen at z-index
+       auto, so .xterm-screen (later in DOM) paints over the scroll layer
+       and absorbs all touch events → scrolling silently broken. Force the
+       viewport on top. */
+    z-index: 4;
     /* Hide native scrollbar — the JS overlay thumb is the one we want. */
     scrollbar-width: none;
   }
