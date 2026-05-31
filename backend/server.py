@@ -22,7 +22,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, H
 from pydantic import BaseModel as _PydanticBaseModel
 from backend.auth import (
     UserDB, Challenge, hash_password, verify_password,
-    new_challenge, send_telegram,
+    new_challenge, send_telegram, send_imessage, send_email,
     CHALLENGE_TTL_SECONDS, MAX_CHALLENGE_ATTEMPTS,
 )
 from fastapi.staticfiles import StaticFiles
@@ -36,20 +36,58 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("claude-terminal")
 
 # --- Config ---
-AUTH_TOKEN = "claude-terminal"  # hardcoded — single-user single-Mac setup
+def _load_or_create_auth_token() -> str:
+    """Resolution: CLAUDE_TERMINAL_TOKEN env > ~/.claude-terminal-token >
+    freshly generated. Generated tokens are 32-byte url-safe; file is 0600."""
+    import secrets as _secrets
+    env_token = os.environ.get("CLAUDE_TERMINAL_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    token_path = Path.home() / ".claude-terminal-token"
+    if token_path.exists():
+        existing = token_path.read_text().strip()
+        if existing:
+            return existing
+    token = _secrets.token_urlsafe(32)
+    token_path.write_text(token)
+    try:
+        os.chmod(token_path, 0o600)
+    except OSError:
+        pass
+    return token
+
+AUTH_TOKEN = _load_or_create_auth_token()
 WORK_DIR = Path(os.environ.get("WORK_DIR", str(Path.home() / "app")))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+# LAN fallback URL advertised to clients. Used when the cloud tunnel is
+# unreachable but client and server are on the same wifi.
+import socket as _socket
+def _default_lan_url() -> str:
+    host = _socket.gethostname()
+    # Bonjour name on macOS is usually <name>.local. gethostname() may already
+    # return that form or just the bare name.
+    if host and "." not in host:
+        host = host + ".local"
+    port = os.environ.get("PORT", "8080")
+    return f"http://{host}:{port}"
+
+LAN_URL = os.environ.get("CLAUDE_TERMINAL_LAN_URL") or _default_lan_url()
+
+# Email fallback for OTP delivery when a user's iMessage send fails (e.g.,
+# Messages.app not signed in, recipient not iMessage, AppleScript permission
+# not yet granted).
+ADMIN_EMAIL = os.environ.get("CLAUDE_TERMINAL_ADMIN_EMAIL", "gassrichard@gmail.com")
 
 # CORS origins — comma-separated list via env, defaults to '*' for backwards
 # compatibility but production setups should pin to specific origins.
 _cors_origins_env = os.environ.get("CLAUDE_TERMINAL_CORS_ORIGINS", "*")
 CORS_ORIGINS = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
 
-# Print the token at startup — now hardcoded so the PWA auto-connects
 print("=" * 60, flush=True)
 print("  Claude Terminal — Auth Token", flush=True)
 print(f"  {AUTH_TOKEN}", flush=True)
-print("  (hardcoded — PWA auto-connects, no setup needed)", flush=True)
+print(f"  (persisted at ~/.claude-terminal-token; LAN: {LAN_URL})", flush=True)
 print("=" * 60, flush=True)
 
 app = FastAPI(title="Claude Terminal")
@@ -69,6 +107,58 @@ TELEGRAM_BOT_TOKEN = (
     USER_DB.admin.telegram_bot_token
     or os.environ.get("TELEGRAM_BOT_TOKEN", "")
 )
+
+# Per-session tokens issued on successful 2FA verify (or password-only login
+# for users without a Telegram chat id). Survives only while the process is
+# alive — restart invalidates all sessions (forced re-login).
+SESSION_TTL_SECONDS = int(os.environ.get("CLAUDE_TERMINAL_SESSION_TTL", str(30 * 24 * 3600)))
+
+
+from dataclasses import dataclass as _dc
+@_dc
+class _AuthSession:
+    username: str
+    created_at: float
+    expires_at: float
+
+# Maps session_token -> _AuthSession. AUTH_TOKEN (the system token) is
+# accepted independently — it's not stored here.
+SESSIONS: dict[str, _AuthSession] = {}
+
+
+def _mint_session(username: str) -> str:
+    import secrets as _s
+    token = _s.token_urlsafe(32)
+    now = time.time()
+    SESSIONS[token] = _AuthSession(
+        username=username,
+        created_at=now,
+        expires_at=now + SESSION_TTL_SECONDS,
+    )
+    return token
+
+
+def _gc_sessions():
+    """Drop expired session tokens. O(n) — fine for the size of this app."""
+    now = time.time()
+    dead = [t for t, s in SESSIONS.items() if s.expires_at < now]
+    for t in dead:
+        SESSIONS.pop(t, None)
+
+
+def _validate_token(token: str) -> bool:
+    """True if `token` is the system AUTH_TOKEN or an unexpired session token."""
+    if not token:
+        return False
+    if secrets_compare(token, AUTH_TOKEN):
+        return True
+    sess = SESSIONS.get(token)
+    if sess is None:
+        return False
+    if sess.expires_at < time.time():
+        SESSIONS.pop(token, None)
+        return False
+    return True
 
 
 class LoginRequest(_PydanticBaseModel):
@@ -106,7 +196,7 @@ def require_token(request: Request):
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             token = auth[7:].strip()
-    if token != AUTH_TOKEN:
+    if not _validate_token(token):
         raise HTTPException(status_code=401, detail="Invalid or missing token")
     return token
 
@@ -343,9 +433,9 @@ class PTYSession:
 
 @app.get("/api/health")
 async def health():
-    # Public — used by the PWA setup screen to verify a backend URL.
-    # Intentionally returns minimal info, no session list.
-    return {"status": "ok"}
+    # Public — used by the PWA setup screen to verify a backend URL,
+    # and to learn the LAN fallback URL for offline-tunnel resilience.
+    return {"status": "ok", "lan_url": LAN_URL}
 
 
 @app.get("/api/auth/configured")
@@ -355,6 +445,7 @@ async def auth_configured():
     return {
         "enabled": bool(USER_DB.users),
         "admin_alerts": bool(USER_DB.admin.telegram_chat_id),
+        "lan_url": LAN_URL,
     }
 
 
@@ -375,11 +466,17 @@ async def auth_login(req: LoginRequest, request: Request):
         log.warning(f"auth: failed login for username={req.username!r} from {request.client.host if request.client else '?'}")
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # Skip Telegram 2FA if user has no telegram_chat_id — return token directly
-    if not user.telegram_chat_id:
-        log.info(f"auth: password-only login for {user.username} from {request.client.host if request.client else '?'}")
+    src_ip = request.client.host if request.client else "?"
+
+    # No phone configured for this user — skip 2FA, issue session token.
+    # Email-only fallback is only used as a backup to iMessage; without a
+    # phone there's nothing to fall back from.
+    if not user.phone:
+        _gc_sessions()
+        sess_token = _mint_session(user.username)
+        log.info(f"auth: password-only login for {user.username} from {src_ip}")
         return {
-            "token": AUTH_TOKEN,
+            "token": sess_token,
             "username": user.username,
             "server_url": user.server_url or "",
             "skip_2fa": True,
@@ -388,22 +485,26 @@ async def auth_login(req: LoginRequest, request: Request):
     cid, challenge = new_challenge(user.username)
     _pending[cid] = challenge
 
-    src_ip = request.client.host if request.client else "?"
-    user_msg = (
-        f"Claude Terminal — your sign-in code is {challenge.code}\n"
-        f"It expires in 5 minutes. Don't share it."
+    sms_text = (
+        f"Claude Terminal — sign-in code {challenge.code} "
+        f"(user: {user.username}, from {src_ip}). Expires in 5 min."
     )
-    admin_msg = (
-        f"Login attempt: {user.username}\n"
-        f"From: {src_ip}\n"
-        f"Code: {challenge.code}\n"
-        f"(this is an audit notification — do not share)"
-    )
-    if user.telegram_chat_id:
-        send_telegram(TELEGRAM_BOT_TOKEN, user.telegram_chat_id, user_msg)
-    if USER_DB.admin.telegram_chat_id:
-        send_telegram(TELEGRAM_BOT_TOKEN, USER_DB.admin.telegram_chat_id, admin_msg)
-    log.info(f"auth: challenge issued for {user.username} from {src_ip}")
+    delivered_via = None
+    if user.phone and send_imessage(user.phone, sms_text):
+        delivered_via = f"iMessage→{user.phone}"
+    elif send_email(
+        ADMIN_EMAIL,
+        "Claude Terminal sign-in code",
+        f"{sms_text}\n\nIf this wasn't you, ignore this email and rotate your password.",
+    ):
+        delivered_via = f"email→{ADMIN_EMAIL}"
+
+    if not delivered_via:
+        _pending.pop(cid, None)
+        log.error(f"auth: both iMessage and email delivery failed for {user.username}")
+        raise HTTPException(status_code=503, detail="Could not deliver verification code")
+
+    log.info(f"auth: challenge issued for {user.username} from {src_ip} via {delivered_via}")
     return {"challenge_id": cid, "expires_in": CHALLENGE_TTL_SECONDS}
 
 
@@ -422,10 +523,12 @@ async def auth_verify(req: VerifyRequest, request: Request):
     if not secrets_compare(req.code.strip(), ch.code):
         log.warning(f"auth: bad code attempt {ch.attempts}/{MAX_CHALLENGE_ATTEMPTS} for {ch.username}")
         raise HTTPException(status_code=401, detail="Invalid code")
-    # Success — consume the challenge and hand back the backend token
+    # Success — consume the challenge and mint a per-session token
     _pending.pop(req.challenge_id, None)
+    _gc_sessions()
+    sess_token = _mint_session(ch.username)
     log.info(f"auth: {ch.username} verified")
-    return {"token": AUTH_TOKEN, "username": ch.username}
+    return {"token": sess_token, "username": ch.username}
 
 @app.get("/api/config")
 async def get_config(_: str = Depends(require_token)):
@@ -574,7 +677,7 @@ async def agent_websocket(websocket: WebSocket):
     """Live agent PTY session — a plain bash shell."""
     await websocket.accept()
     token = websocket.query_params.get("token", "")
-    if token != AUTH_TOKEN:
+    if not _validate_token(token):
         log.warning(f"WS agent rejected: bad token from {websocket.client.host if websocket.client else '?'}")
         await websocket.close(code=4001, reason="Invalid token")
         return
@@ -646,7 +749,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     # learns to re-prompt — it just retries forever.
     await websocket.accept()
     token = websocket.query_params.get("token", "")
-    if token != AUTH_TOKEN:
+    if not _validate_token(token):
         log.warning(f"WS rejected: bad token from {websocket.client.host if websocket.client else '?'}")
         await websocket.close(code=4001, reason="Invalid token")
         return

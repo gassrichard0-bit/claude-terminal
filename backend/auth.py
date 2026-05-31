@@ -25,7 +25,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
+import subprocess
 import time
 import urllib.parse
 import urllib.request
@@ -52,6 +54,7 @@ class User:
     password_hash: str
     telegram_chat_id: Optional[str] = None
     server_url: str = ""
+    phone: Optional[str] = None  # E.164, e.g., +14176308774 — used for iMessage OTP
 
 
 @dataclass
@@ -77,6 +80,7 @@ class UserDB:
                     password_hash=u.get("password_hash", ""),
                     telegram_chat_id=u.get("telegram_chat_id"),
                     server_url=u.get("server_url", ""),
+                    phone=u.get("phone"),
                 )
                 for name, u in users_data.items()
             },
@@ -123,7 +127,8 @@ def generate_otp() -> str:
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str, timeout: float = 5.0) -> bool:
-    """POST to Telegram sendMessage. Returns True on 200 OK."""
+    """POST to Telegram sendMessage. Returns True on 200 OK. Kept for the
+    Telegram bridge daemon; no longer used by the auth OTP flow."""
     if not bot_token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -133,6 +138,86 @@ def send_telegram(bot_token: str, chat_id: str, text: str, timeout: float = 5.0)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
     except Exception:
+        return False
+
+
+_PHONE_OK = re.compile(r"^\+?[0-9]{7,15}$")
+
+
+def _normalize_phone(phone: Optional[str]) -> Optional[str]:
+    """Strip formatting; reject anything that isn't digits/+. 10-digit numbers
+    are assumed US (+1)."""
+    if not phone:
+        return None
+    cleaned = re.sub(r"[\s\-().]", "", phone.strip())
+    if not _PHONE_OK.match(cleaned):
+        return None
+    if not cleaned.startswith("+") and len(cleaned) == 10:
+        cleaned = "+1" + cleaned
+    elif not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+    return cleaned
+
+
+def _applescript_escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("\"", "\\\"")
+
+
+def send_imessage(phone: Optional[str], text: str, timeout: float = 10.0) -> bool:
+    """Send `text` to `phone` via macOS Messages.app (iMessage or SMS via
+    Continuity). Returns True on success.
+
+    No external service / API key — needs Messages.app signed in, and for SMS
+    fallback an iPhone with Text Message Forwarding enabled."""
+    target = _normalize_phone(phone)
+    if not target:
+        return False
+    safe_text = _applescript_escape(text)
+    script = (
+        'tell application "Messages"\n'
+        '  set targetService to 1st service whose service type = iMessage\n'
+        f'  set targetBuddy to buddy "{target}" of targetService\n'
+        f'  send "{safe_text}" to targetBuddy\n'
+        'end tell'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return False
+
+
+_EMAIL_OK = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def send_email(address: Optional[str], subject: str, body: str, timeout: float = 15.0) -> bool:
+    """Send via macOS Mail.app. Requires Mail.app signed in with an account."""
+    if not address or not _EMAIL_OK.match(address.strip()):
+        return False
+    addr = address.strip()
+    safe_subject = _applescript_escape(subject)
+    safe_body = _applescript_escape(body)
+    safe_addr = _applescript_escape(addr)
+    script = (
+        'tell application "Mail"\n'
+        '  set newMsg to make new outgoing message with properties '
+        f'{{subject:"{safe_subject}", content:"{safe_body}", visible:false}}\n'
+        '  tell newMsg\n'
+        f'    make new to recipient with properties {{address:"{safe_addr}"}}\n'
+        '  end tell\n'
+        '  send newMsg\n'
+        'end tell'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         return False
 
 

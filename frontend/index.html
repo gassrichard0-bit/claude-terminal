@@ -500,7 +500,7 @@
 <div id="login-modal" class="setup-modal" style="display: none;">
   <div class="setup-card">
     <h2 id="login-title">Sign in</h2>
-    <p class="setup-sub" id="login-sub">Enter your username and password. You'll get a 6-digit code on Telegram.</p>
+    <p class="setup-sub" id="login-sub">Enter your username and password. You'll get a 6-digit code by iMessage.</p>
     <label>
       <span>Username</span>
       <input id="login-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
@@ -510,7 +510,7 @@
       <input id="login-password" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false">
     </label>
     <label id="login-code-row" style="display: none;">
-      <span>6-digit code <small>(sent to your Telegram)</small></span>
+      <span>6-digit code <small>(sent to your phone via iMessage)</small></span>
       <input id="login-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autocapitalize="none" spellcheck="false">
     </label>
     <div id="login-error" class="setup-error"></div>
@@ -982,7 +982,7 @@ const SCROLLBACK_VERSION_KEY = 'claude-terminal-version';
 // the prior 2 MB blob replayed via a single term.write() locked mobile
 // Safari for 50–200 ms (sometimes long enough that iOS treated it as an
 // unresponsive page).
-const SCROLLBACK_VERSION = '2026-05-30-perf-trim';
+const SCROLLBACK_VERSION = '2026-05-30-fit-before-replay';
 const MAX_SCROLLBACK = 256_000; // ~256 KB of raw bytes (incl. ANSI codes)
 let streamBuffer = '';
 
@@ -1133,6 +1133,15 @@ function fit_and_resize() {
 }
 
 window.addEventListener('resize', fit_and_resize);
+// iOS Safari: keyboard show/hide changes the visual viewport but does NOT
+// fire window.resize reliably. Catch it via visualViewport.
+if (window.visualViewport) {
+  let vvTimer = null;
+  window.visualViewport.addEventListener('resize', () => {
+    if (vvTimer) clearTimeout(vvTimer);
+    vvTimer = setTimeout(fit_and_resize, 100);
+  });
+}
 
 // --- User config (BYOM) ---
 // Each user enters their own Mac URL + name; stored in localStorage.
@@ -1146,7 +1155,13 @@ let userConfig = (function () {
 
 function saveConfig(cfg) {
   userConfig = cfg;
-  try { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg)); } catch (_) {}
+  // Don't persist the auth token to localStorage — keeping it in-memory only
+  // forces a fresh login each time the PWA is closed/reopened. WS reconnects
+  // within the same session still work from in-memory userConfig.token.
+  try {
+    const { token, ...persisted } = cfg;
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(persisted));
+  } catch (_) {}
   applyConfig();
 }
 function applyConfig() {
@@ -1170,8 +1185,85 @@ function applyConfig() {
   }
 }
 
+// LAN fallback URL — populated from /api/health or /api/auth/configured on
+// successful contact with the primary, and used when the primary is down.
+const LAN_URL_KEY = 'claude-terminal-lan-url';
+let lanFallbackUrl = (function () {
+  try { return localStorage.getItem(LAN_URL_KEY) || ''; } catch (_) { return ''; }
+})();
+function rememberLanUrl(u) {
+  if (!u || typeof u !== 'string') return;
+  if (u === lanFallbackUrl) return;
+  lanFallbackUrl = u.replace(/\/+$/, '');
+  try { localStorage.setItem(LAN_URL_KEY, lanFallbackUrl); } catch (_) {}
+}
+// When the primary is unreachable, we swap to lanFallbackUrl for the session
+// only (not persisted into userConfig). On the next reload we try primary again.
+let activeBackendOverride = '';
+let usingLanFallback = false;
+function setLanFallbackIndicator(on) {
+  const el = document.getElementById('backend-host');
+  if (!el) return;
+  if (on) el.setAttribute('data-fallback', '1'); else el.removeAttribute('data-fallback');
+  // Render the indicator inline — appended to whatever host text is shown.
+  applyConfig();
+  if (on) {
+    const tag = document.createElement('span');
+    tag.textContent = ' (via LAN)';
+    tag.style.opacity = '0.7';
+    tag.style.marginLeft = '4px';
+    el.appendChild(tag);
+  }
+}
+
+// Probe a backend URL's /api/health with a short timeout. Returns the parsed
+// JSON body on success (which may include lan_url), or null on failure.
+async function probeBackend(url, timeoutMs) {
+  if (!url) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs || 2500);
+  try {
+    const r = await fetch(url.replace(/\/+$/, '') + '/api/health', { signal: ctrl.signal });
+    if (!r.ok) return null;
+    return await r.json().catch(() => ({}));
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Decide which backend URL to use. Tries primary first, falls back to LAN.
+// Side effects: updates activeBackendOverride, usingLanFallback, and (when
+// primary is reachable) refreshes the stored LAN URL.
+async function chooseBackend() {
+  const primary = (userConfig && userConfig.backendUrl)
+    ? userConfig.backendUrl.replace(/\/+$/, '')
+    : location.origin;
+  const primaryHealth = await probeBackend(primary, 2500);
+  if (primaryHealth) {
+    if (primaryHealth.lan_url) rememberLanUrl(primaryHealth.lan_url);
+    activeBackendOverride = '';
+    if (usingLanFallback) { usingLanFallback = false; setLanFallbackIndicator(false); }
+    return primary;
+  }
+  // Primary down — try LAN if we have one and it differs.
+  if (lanFallbackUrl && lanFallbackUrl !== primary) {
+    const lanHealth = await probeBackend(lanFallbackUrl, 2500);
+    if (lanHealth) {
+      activeBackendOverride = lanFallbackUrl;
+      if (!usingLanFallback) { usingLanFallback = true; setLanFallbackIndicator(true); }
+      return lanFallbackUrl;
+    }
+  }
+  // Nothing reachable — return primary and let the WS error path handle it.
+  activeBackendOverride = '';
+  return primary;
+}
+
 // Compute the backend base URL the user pointed at (no trailing slash).
 function backendBase() {
+  if (activeBackendOverride) return activeBackendOverride;
   if (userConfig && userConfig.backendUrl) {
     return userConfig.backendUrl.replace(/\/+$/, '');
   }
@@ -1186,19 +1278,25 @@ function backendWsUrl(path) {
 }
 
 async function boot() {
-  load_scrollback();
+  // Fit FIRST so xterm knows the real cols/rows before any content is written.
+  // xterm.js does NOT reflow already-rendered scrollback when you resize, so
+  // load_scrollback() running before the fit caused box-drawing characters in
+  // claude's TUI to render at the wrong width — exactly the "broken boxes /
+  // overlapping text" mobile bug.
   fit_and_resize();
+  // Defer once more after layout settles so iOS Safari has final viewport.
+  requestAnimationFrame(() => fit_and_resize());
+  load_scrollback();
   applyConfig();
 
-  // Auto-connect: backendUrl from page origin, token hardcoded in server.
-  // Preserve custom backendUrl from multi-user login (e.g., dan.access-term.com)
-  const defaults = {
-    token: 'claude-terminal',
-  };
+  // Token is no longer hardcoded — it's minted server-side via /api/auth/verify
+  // and stashed on userConfig.token. Defaults only fill in fields the user
+  // hasn't set, never overwrite a stored token.
+  const defaults = { name: 'You' };
   if (!userConfig || !userConfig.backendUrl) {
     defaults.backendUrl = window.location.origin;
   }
-  userConfig = Object.assign({ name: 'You' }, userConfig || {}, defaults);
+  userConfig = Object.assign({}, defaults, userConfig || {});
   saveConfig(userConfig);
   applyConfig();
 
@@ -1211,15 +1309,28 @@ async function boot() {
     if (r.ok) {
       const d = await r.json();
       authEnabled = !!d.enabled;
+      if (d.lan_url) rememberLanUrl(d.lan_url);
     }
   } catch (_) {}
 
   if (authEnabled) {
-    openLogin();
+    // If we already have a session token from a prior login, try it first.
+    // If the server rejects (token expired, server restarted), the WS onclose
+    // 4001 handler re-opens the login modal.
+    if (userConfig && userConfig.token) {
+      connect(userConfig.token);
+    } else {
+      openLogin();
+    }
     return;
   }
 
-  connect('claude-terminal');
+  // No auth required and no stored token — open login as last resort.
+  if (userConfig && userConfig.token) {
+    connect(userConfig.token);
+  } else {
+    openLogin();
+  }
 }
 
 // All authenticated fetches go through here — adds Authorization: Bearer
@@ -1252,7 +1363,7 @@ function openLogin() {
   loginCodeRow.style.display = 'none';
   loginCode.value = '';
   loginSubmit.textContent = 'Continue';
-  loginSub.textContent = 'Enter your username and password. You\'ll get a 6-digit code on Telegram.';
+  loginSub.textContent = 'Enter your username and password. You\'ll get a 6-digit code by iMessage.';
   showLoginError('');
   loginModal.style.display = 'flex';
   loginModal.classList.add('show');
@@ -1306,7 +1417,7 @@ async function submitLoginPassword() {
     _challengeId = d.challenge_id;
     loginCodeRow.style.display = '';
     loginCode.value = '';
-    loginSub.textContent = 'Check Telegram for your 6-digit code.';
+    loginSub.textContent = 'Check your phone for the 6-digit code.';
     loginSubmit.textContent = 'Verify';
     setTimeout(() => loginCode.focus(), 50);
   } catch (e) {
@@ -1416,7 +1527,10 @@ function connect(token) {
       return;
     }
     if (!reconnectTimer) {
-      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect(token);
+      }, 3000);
     }
   };
 
@@ -1426,7 +1540,10 @@ function connect(token) {
     errorBar.textContent = 'Could not reach ' + (userConfig && userConfig.backendUrl ? userConfig.backendUrl : 'the server') + '. Retrying…';
     errorBar.style.display = 'block';
     if (!reconnectTimer) {
-      reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(token); }, 3000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect(token);
+      }, 3000);
     }
   };
 }
