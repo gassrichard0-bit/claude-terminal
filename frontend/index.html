@@ -28,10 +28,6 @@
        actual visible area in real time. Fallback to 100% for older browsers. */
     height: 100%;
     height: 100dvh;
-    /* JS sets --vvh from visualViewport.height when available — gives the
-       keyboard-tracking layout instant updates instead of waiting for the
-       iOS keyboard animation to finish. Falls back to dvh otherwise. */
-    height: var(--vvh, 100dvh);
     overflow: hidden;
     /* Block pull-to-refresh and edge bounce in mobile Safari — those gestures
        compete with our custom scroll handlers and break the experience. */
@@ -1141,28 +1137,12 @@ window.addEventListener('resize', fit_and_resize);
 // fire window.resize reliably. Track visualViewport directly so the input
 // bar follows the keyboard the instant it starts moving.
 if (window.visualViewport) {
-  let vvRaf = 0;
   let fitTimer = null;
-  const trackViewport = () => {
-    // Coalesce style writes to one per animation frame (cheap — just a CSS
-    // var update; the actual layout change is GPU-composited via height:
-    // var(--vvh)). Input-bar tracks the keyboard with no perceptible lag.
-    if (vvRaf) return;
-    vvRaf = requestAnimationFrame(() => {
-      vvRaf = 0;
-      document.documentElement.style.setProperty(
-        '--vvh', window.visualViewport.height + 'px'
-      );
-    });
-    // Refit xterm once the keyboard SETTLES, not during the slide. Reflows
-    // are expensive and the user can't see the terminal during the slide
-    // anyway (it's behind the keyboard transition).
+  const onSettle = () => {
     if (fitTimer) clearTimeout(fitTimer);
     fitTimer = setTimeout(fit_and_resize, 150);
   };
-  window.visualViewport.addEventListener('resize', trackViewport);
-  window.visualViewport.addEventListener('scroll', trackViewport);
-  trackViewport();
+  window.visualViewport.addEventListener('resize', onSettle);
 }
 
 // --- User config (BYOM) ---
