@@ -1139,26 +1139,30 @@ function fit_and_resize() {
 window.addEventListener('resize', fit_and_resize);
 // iOS Safari: keyboard show/hide changes the visual viewport but does NOT
 // fire window.resize reliably. Track visualViewport directly so the input
-// bar follows the keyboard up the instant it starts moving (instead of
-// after the animation completes).
+// bar follows the keyboard the instant it starts moving.
 if (window.visualViewport) {
-  const updateViewport = () => {
-    const vv = window.visualViewport;
-    // Drives the --vvh CSS variable used by html { height: var(--vvh) }
-    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
-    // Refit xterm too — but only schedule one fit per animation frame to
-    // avoid layout thrash during the ~250ms keyboard slide.
-    if (!updateViewport._rafPending) {
-      updateViewport._rafPending = true;
-      requestAnimationFrame(() => {
-        updateViewport._rafPending = false;
-        fit_and_resize();
-      });
-    }
+  let vvRaf = 0;
+  let fitTimer = null;
+  const trackViewport = () => {
+    // Coalesce style writes to one per animation frame (cheap — just a CSS
+    // var update; the actual layout change is GPU-composited via height:
+    // var(--vvh)). Input-bar tracks the keyboard with no perceptible lag.
+    if (vvRaf) return;
+    vvRaf = requestAnimationFrame(() => {
+      vvRaf = 0;
+      document.documentElement.style.setProperty(
+        '--vvh', window.visualViewport.height + 'px'
+      );
+    });
+    // Refit xterm once the keyboard SETTLES, not during the slide. Reflows
+    // are expensive and the user can't see the terminal during the slide
+    // anyway (it's behind the keyboard transition).
+    if (fitTimer) clearTimeout(fitTimer);
+    fitTimer = setTimeout(fit_and_resize, 150);
   };
-  window.visualViewport.addEventListener('resize', updateViewport);
-  window.visualViewport.addEventListener('scroll', updateViewport);
-  updateViewport();
+  window.visualViewport.addEventListener('resize', trackViewport);
+  window.visualViewport.addEventListener('scroll', trackViewport);
+  trackViewport();
 }
 
 // --- User config (BYOM) ---
