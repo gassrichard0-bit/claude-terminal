@@ -28,6 +28,10 @@
        actual visible area in real time. Fallback to 100% for older browsers. */
     height: 100%;
     height: 100dvh;
+    /* JS sets --vvh from visualViewport.height when available — gives the
+       keyboard-tracking layout instant updates instead of waiting for the
+       iOS keyboard animation to finish. Falls back to dvh otherwise. */
+    height: var(--vvh, 100dvh);
     overflow: hidden;
     /* Block pull-to-refresh and edge bounce in mobile Safari — those gestures
        compete with our custom scroll handlers and break the experience. */
@@ -1134,13 +1138,27 @@ function fit_and_resize() {
 
 window.addEventListener('resize', fit_and_resize);
 // iOS Safari: keyboard show/hide changes the visual viewport but does NOT
-// fire window.resize reliably. Catch it via visualViewport.
+// fire window.resize reliably. Track visualViewport directly so the input
+// bar follows the keyboard up the instant it starts moving (instead of
+// after the animation completes).
 if (window.visualViewport) {
-  let vvTimer = null;
-  window.visualViewport.addEventListener('resize', () => {
-    if (vvTimer) clearTimeout(vvTimer);
-    vvTimer = setTimeout(fit_and_resize, 100);
-  });
+  const updateViewport = () => {
+    const vv = window.visualViewport;
+    // Drives the --vvh CSS variable used by html { height: var(--vvh) }
+    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
+    // Refit xterm too — but only schedule one fit per animation frame to
+    // avoid layout thrash during the ~250ms keyboard slide.
+    if (!updateViewport._rafPending) {
+      updateViewport._rafPending = true;
+      requestAnimationFrame(() => {
+        updateViewport._rafPending = false;
+        fit_and_resize();
+      });
+    }
+  };
+  window.visualViewport.addEventListener('resize', updateViewport);
+  window.visualViewport.addEventListener('scroll', updateViewport);
+  updateViewport();
 }
 
 // --- User config (BYOM) ---
